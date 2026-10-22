@@ -31,6 +31,8 @@ format:
         \addtokomafont{disposition}{\sffamily}
         \setkomafont{caption}{\small}
         \setkomafont{captionlabel}{\small\bfseries}
+bibliography: references.bib
+link-citations: true
 execute:
   echo: false
   warning: false
@@ -59,6 +61,11 @@ analysis_data <- tar_read(analysis_data)
 status_counts <- tar_read(status_counts)
 coverage_mismatch <- tar_read(coverage_mismatch)
 trends <- tar_read(trends)
+classified <- tar_read(classified)
+silent <- tar_read(silent)
+exceeding <- tar_read(exceeding)
+top_reporters <- tar_read(top_reporters)
+series <- tar_read(series)
 
 # Formatting helpers for inline values
 pct <- function(x, digits = 0) paste0(formatC(100 * x, format = "f", digits = digits), "%")
@@ -70,6 +77,28 @@ gbd_years <- sort(unique(analysis_data$year))
 n_countries <- n_distinct(analysis_data$iso3)
 most_variable <- cause_summary$cause[which.max(cause_summary$median_fold_range)]
 least_variable <- cause_summary$cause[which.min(cause_summary$median_fold_range)]
+
+# Country-level patterns, latest five years
+recent_years <- 2019:2023
+recent <- filter(classified, year %in% recent_years)
+zero_share <- function(cz, lo, hi) {
+  d <- filter(recent, cause == cz, incidence_n_val >= lo, incidence_n_val < hi)
+  mean(d$agreement == "Zero reported")
+}
+exceed <- filter(recent, agreement == "Exceeds modelled")
+exceed_small <- function(cz) with(filter(exceed, cause == cz), mean(small_gbd))
+exceed_region <- function(cz, region) nrow(filter(exceed, cause == cz, who_region == region))
+exceed_region_small <- function(cz, region) nrow(filter(exceed, cause == cz, who_region == region, small_gbd))
+silent_missing_share <- with(silent, sum(years_missing) / sum(years_missing + years_zero))
+nga_pert <- filter(silent, cause == "Pertussis", iso3 == "NGA")
+floored <- count(filter(analysis_data, gbd_floored), cause)
+che_pert <- filter(analysis_data, iso3 == "CHE", cause == "Pertussis", rate_status == "ratio")
+pert_zero_only <- filter(ranking, cause == "Pertussis", reported == 0)
+top_rep <- function(cz, yr) top_reporters$top[top_reporters$cause == cz & top_reporters$year == yr]
+gbd_top <- series |>
+  filter(source == "GBD modelled", year == max(recent_years)) |>
+  group_by(cause) |> mutate(share = cases / sum(cases)) |> slice_max(cases, n = 2) |>
+  summarise(top = paste0(location, " (", round(100 * share), "%)", collapse = " and "))
 
 kbl_pdf <- function(x, ...) {
   kbl(x, booktabs = TRUE, linesep = "", ...) |>
@@ -83,7 +112,9 @@ kbl_pdf <- function(x, ...) {
 - **The rate moves a lot within countries.** In a typical country, the highest year's rate is `r fold(val(cause_summary, "Pertussis", "median_fold_range"))` the lowest for pertussis, `r fold(val(cause_summary, "Diphtheria", "median_fold_range"))` for diphtheria and `r fold(val(cause_summary, "Tetanus", "median_fold_range"))` for tetanus. Change over time within countries accounts for `r pct(min(cause_summary$within_share))`-`r pct(max(cause_summary$within_share))` of all variation in the (log) rate; the rest is stable differences between countries.
 - **Year-to-year changes in reported cases barely track GBD's changes.** The correlation of annual log changes is `r round(val(change_summary, "Diphtheria", "cor_change"), 2)` for diphtheria, `r round(val(change_summary, "Pertussis", "cor_change"), 2)` for pertussis and `r round(val(change_summary, "Tetanus", "cor_change"), 2)` for tetanus. GBD's estimates are smooth over time, so year-to-year swings in the rate come almost entirely from reported cases.
 - **DTP3 coverage explains differences between countries more than changes within them.** Countries with higher coverage report a larger share of modelled cases (Spearman `r round(min(dtp3_assoc$spearman_between), 2)`-`r round(max(dtp3_assoc$spearman_between), 2)`), but within a country, coverage and reporting rate move together only weakly.
-- **The sources are not independent.** `r pct(val(cause_summary, "Diphtheria", "pct_within_5pct_of_100"))` of diphtheria country-years have reported cases within 5% of GBD's estimate, and `r pct(val(cause_summary, "Tetanus", "pct_over_100"))` of tetanus country-years report *more* cases than GBD models. Treat the ratio as a measure of agreement between sources, not as true surveillance completeness.
+- **The ratio means something different for each disease** (@sec-explanations). For pertussis, GBD scales WHO notifications up to Switzerland's reporting level, so the ratio mostly measures distance from Switzerland [@gbd2023nonfatal]. For diphtheria, GBD 2023 replaces its estimate with the WHO count wherever the model falls below it, which is why `r num(floored$n[floored$cause == "Diphtheria"])` diphtheria country-years match almost exactly. For diphtheria and tetanus, GBD derives incidence from deaths divided by a case-fatality ratio, so the ratio compares notifications with a death-based estimate.
+- **Reports above GBD's estimate are mostly a "GBD expects almost nothing" effect.** In `r min(recent_years)`-`r max(recent_years)`, `r pct(exceed_small("Diphtheria"))` of diphtheria and `r pct(exceed_small("Tetanus"))` of tetanus country-years that report more than GBD are places where GBD estimates fewer than 10 cases, mostly in Europe and the Americas. The exceptions with a real GBD burden are outbreak settings (diphtheria in Nigeria, Niger and India in 2023) and tetanus in East and Central Africa.
+- **Large "silent" gaps are mostly missing reports, not zeros.** Of the country-years where GBD estimates at least 100 cases a year and WHO has no positive count, `r pct(silent_missing_share)` are blanks rather than reported zeros. The largest is pertussis in Nigeria: no report to WHO in any year `r min(recent_years)`-`r max(recent_years)`, against about `r num(round(nga_pert$gbd_mean, -4))` modelled cases a year.
 
 # Data and methods
 
@@ -113,8 +144,9 @@ For each country, cause and year, the **implied reporting rate** is GHO reported
 #| tbl-cap: "Country-years 1990-2023 by whether a reporting rate can be computed."
 status_counts |>
   select(Cause = cause, `Rate computed` = ratio, `Zero reported` = `zero reported`,
-         `GBD < 10 cases` = `modelled < threshold`, `Not reported to WHO` = `not reported to WHO`) |>
-  kbl_pdf(align = "lrrrr", format.args = list(big.mark = ","))
+         `GBD < 10 cases` = `modelled < threshold`, `Not reported to WHO` = `not reported to WHO`,
+         `Reporting break` = `known reporting break`) |>
+  kbl_pdf(align = "lrrrrr", format.args = list(big.mark = ","))
 ```
 
 Rates are analysed on the log~10~ scale, so a move from 1% to 10% counts the same as a move from 10% to 100%. Years in which a country reported zero cases have no log rate. They are shown separately and are not imputed. Per-country variability is summarised for countries with at least four years with a rate, using:
@@ -125,6 +157,18 @@ Rates are analysed on the log~10~ scale, so a move from 1% to 10% counts the sam
 
 The **within-country share** is the proportion of the total sum of squares of log~10~ rate that lies around each country's own mean.
 
+## Data-quality flags
+
+Following the research brief [@researchbrief], three kinds of country-year are flagged:
+
+- **Known reporting breaks.** India's "total tetanus" loses its non-neonatal cases from 2020 and equals the neonatal count from 2022, so India tetanus 2020 onwards is excluded from all rates. Pakistan pertussis 1989-1990 and China pertussis from 2017 (PCR accepted) are labelled but kept.
+- **GBD floored at the WHO count.** GBD 2023 replaces its diphtheria and pertussis estimates with the WHO count wherever the model falls below it [@gbd2023nonfatal]. Country-years within 1% of the WHO count are labelled as floored: `r num(floored$n[floored$cause == "Diphtheria"])` for diphtheria and `r num(floored$n[floored$cause == "Pertussis"])` for pertussis. They stay in the rate analysis but are shown separately in the country-level breakdowns.
+- **Missing vs zero.** GHO stores a missing report as null and a reported zero as 0. The pipeline keeps the two apart throughout.
+
+## Interactive explorer
+
+`explorer.html` in the repository is an interactive companion to this report. It shows @fig-scatter for any year with every country named on hover, breaks @fig-trends down by country, and gives a profile for each country with both sources over time. Open it in a web browser.
+
 # Reported vs modelled cases
 
 @fig-scatter compares the two sources country by country. Dashed lines mark reported = 100%, 10% and 1% of modelled, from left to right. Pertussis reports sit one to three orders of magnitude below GBD's estimates. Diphtheria and tetanus scatter around the 10-100% lines, and many diphtheria points lie exactly on the 100% line. Many countries report zero cases even where GBD estimates hundreds or thousands.
@@ -134,6 +178,87 @@ The **within-country share** is the proportion of the total sum of squares of lo
 #| fig-cap: "WHO-reported cases vs GBD modelled incidence by country, selected years. Dashed lines, left to right: reported = 100%, 10% and 1% of modelled. Points on the bottom edge reported zero cases."
 #| fig-height: 6.2
 for_report(tar_read(fig_scatter)) + theme_dtp(base_size = 8)
+```
+
+## Which countries sit where
+
+To see which countries make up each part of @fig-scatter, every country-year is put into one of seven classes by how the WHO count compares with GBD's estimate: not reported to WHO, zero reported, below 1%, 1-10%, 10-99%, equal to GBD because of the floor, and above GBD. This classification keeps country-years with fewer than 10 modelled cases, so every point has a class. @fig-shares-region and @fig-shares-size show the mix for `r min(recent_years)`-`r max(recent_years)`.
+
+```{r}
+#| label: fig-shares-region
+#| fig-cap: "How WHO counts compare with GBD estimates, by WHO region, 2019-2023 country-years."
+#| fig-height: 6
+for_report(tar_read(fig_shares_region)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-shares-size
+#| fig-cap: "How WHO counts compare with GBD estimates, by size of GBD's estimate, 2019-2023 country-years."
+#| fig-height: 6
+for_report(tar_read(fig_shares_band)) + theme_dtp(base_size = 8)
+```
+
+Four patterns stand out.
+
+1. **Zero reports cluster where GBD expects few cases.** For diphtheria, `r pct(zero_share("Diphtheria", 0, 100))` of country-years where GBD estimates fewer than 100 cases report zero, against `r pct(zero_share("Diphtheria", 1000, Inf))` where it estimates 1,000 or more; for tetanus the figures are `r pct(zero_share("Tetanus", 0, 100))` and `r pct(zero_share("Tetanus", 1000, Inf))`. Pertussis is the exception: `r pct(zero_share("Pertussis", 1000, Inf))` of country-years report zero even where GBD estimates 1,000 cases or more.
+2. **Reports above GBD come from two different places.** Most are in Europe and the Americas, where GBD estimates almost no cases: `r exceed_region_small("Diphtheria", "Europe")` of the `r exceed_region("Diphtheria", "Europe")` European diphtheria country-years above GBD, and `r exceed_region_small("Tetanus", "Europe")` of `r exceed_region("Tetanus", "Europe")` for tetanus, have GBD estimates below 10 cases. The rest are outbreaks or high-burden settings, chiefly diphtheria in Nigeria, Niger and India and tetanus in Uganda, Kenya, Angola and the Central African Republic.
+3. **Pertussis almost never matches.** Across all regions and burden levels, most pertussis reports are below 10% of GBD's estimate. Only Europe has a substantial share in the 10-99% band.
+4. **The largest gaps are missing reports.** @tbl-silent lists countries where GBD estimates at least 100 cases a year but WHO received no positive count in `r min(recent_years)`-`r max(recent_years)`. Most of these country-years are blanks rather than reported zeros.
+
+```{r}
+#| label: tbl-silent
+#| tbl-cap: "Countries with no positive WHO count in 2019-2023 despite a GBD estimate of at least 100 cases a year (top 8 per disease by GBD estimate). Zero = years reported as zero; Missing = years with no report."
+silent |>
+  group_by(cause) |>
+  slice_max(gbd_mean, n = 8) |>
+  ungroup() |>
+  transmute(Disease = cause, Country = location, `WHO region` = who_region,
+            `GBD cases/year` = num(round(gbd_mean)), Zero = years_zero, Missing = years_missing,
+            `DTP3 (%)` = round(dtp3_mean)) |>
+  kbl_pdf(align = "lllrrrr") |>
+  collapse_rows(columns = 1, valign = "top", latex_hline = "major")
+```
+
+## The latest year in detail
+
+@fig-labelled-diphtheria, @fig-labelled-pertussis and @fig-labelled-tetanus repeat the `r max(recent_years)` panels of @fig-scatter with notable countries named. The labels mark every country that reported more than GBD estimates, plus the largest GBD burdens among countries reporting zero or far below.
+
+```{r}
+#| label: fig-labelled-diphtheria
+#| fig-cap: "Diphtheria, 2023: WHO-reported vs GBD-modelled cases with notable countries labelled. Dashed line: reported = modelled. Points on the bottom row reported zero."
+#| fig-height: 5.6
+for_report(tar_read(fig_labelled_Diphtheria)) + theme_dtp(base_size = 8)
+```
+
+For diphtheria in `r max(recent_years)`, the cluster at the top left is mostly Western Europe. Germany, France, Switzerland, Belgium and the Netherlands each reported between 14 and 135 cases while GBD estimates less than one. GBD derives diphtheria incidence from deaths, so with almost no deaths it estimates almost no cases. Switzerland's recent cases were mostly cutaneous infections and carriers among asylum seekers [@brockhaus2024], and GBD's definition is respiratory diphtheria; a similar case mix elsewhere in Western Europe is plausible but not verified here. Nigeria, Niger and India report more than GBD because of documented outbreaks [@bitafouda2025]. At the bottom right, Mali, Papua New Guinea, Benin, Zambia, Ghana and Burkina Faso reported zero against GBD estimates of 118-462 cases.
+
+```{r}
+#| label: fig-labelled-pertussis
+#| fig-cap: "Pertussis, 2023: WHO-reported vs GBD-modelled cases with notable countries labelled."
+#| fig-height: 5.6
+for_report(tar_read(fig_labelled_Pertussis)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-labelled-tetanus
+#| fig-cap: "Tetanus, 2023: WHO-reported vs GBD-modelled cases with notable countries labelled."
+#| fig-height: 5.6
+for_report(tar_read(fig_labelled_Tetanus)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: tbl-exceeding
+#| tbl-cap: "Country-years in 2023 where WHO reported more cases than GBD estimates (excluding the GBD floor), top 8 per disease by reported cases."
+exceeding |>
+  group_by(cause) |>
+  slice_max(reported_cases, n = 8, with_ties = FALSE) |>
+  ungroup() |>
+  transmute(Disease = cause, Country = location, `WHO region` = who_region,
+            `WHO reported` = num(reported_cases),
+            `GBD modelled` = ifelse(modelled < 10, formatC(modelled, format = "f", digits = 1), num(round(modelled))),
+            `Ratio` = ifelse(ratio >= 100, ">100x", paste0(formatC(ratio, format = "fg", digits = 2), "x"))) |>
+  kbl_pdf(align = "lllrrr") |>
+  collapse_rows(columns = 1, valign = "top", latex_hline = "major")
 ```
 
 # How much does the reporting rate vary over time?
@@ -236,7 +361,7 @@ for_report(tar_read(fig_trajectories_Tetanus)) + theme_dtp(base_size = 8)
 
 # Where do the sources disagree most?
 
-Pooling 2020-2023 smooths single-year outbreaks. @fig-disagreement shows the ten countries at each end per cause. At the high end, diphtheria and tetanus reports exceed GBD's estimate several-fold in outbreak and conflict settings. At the low end, `r num(sum(ranking$reported == 0 & ranking$cause == "Pertussis"))` countries reported no pertussis cases at all over four years, despite GBD estimating at least 10 cases a year in each.
+Pooling 2020-2023 smooths single-year outbreaks. @fig-disagreement shows the ten countries at each end per cause. At the high end, diphtheria and tetanus reports exceed GBD's estimate several-fold in outbreak and conflict settings. At the low end, `r num(nrow(pert_zero_only))` countries sent WHO only zeros for pertussis in the years they reported, despite GBD estimating at least 10 cases a year in each. Only `r num(sum(pert_zero_only$years_reported == 4))` of them reported zero in all four years; the rest have years with no report at all.
 
 ```{r}
 #| label: fig-disagreement
@@ -280,6 +405,46 @@ GBD shows a smooth decline in all three diseases (@fig-trends). Reported cases a
 for_report(tar_read(fig_trends)) + theme_dtp(base_size = 8)
 ```
 
+## Which countries make up the global totals
+
+The two global totals in @fig-trends are driven by different countries (@fig-contrib-diphtheria, @fig-contrib-pertussis, @fig-contrib-tetanus, @tbl-top-reporters).
+
+- **GBD totals follow population and vaccine coverage.** In `r max(recent_years)` the largest GBD contributors are `r gbd_top$top[gbd_top$cause == "Pertussis"]` for pertussis, `r gbd_top$top[gbd_top$cause == "Diphtheria"]` for diphtheria and `r gbd_top$top[gbd_top$cause == "Tetanus"]` for tetanus.
+- **WHO totals follow whoever is reporting an outbreak.** A handful of countries make up most of each year's reported total, and they change from year to year. Diphtheria moved from India (2019) to Nigeria (2023-2025). In 2024, China alone accounted for half of the global pertussis count, after it broadened its case definition [@chongqing2025].
+- **Historic peaks were concentrated too.** The 1993-1995 diphtheria peak in WHO data comes from the epidemic in the former Soviet Union. In the early 1980s China and India were the largest single contributors to reported pertussis.
+
+```{r}
+#| label: fig-contrib-diphtheria
+#| fig-cap: "Diphtheria: contribution of the largest countries to the global WHO-reported and GBD-modelled totals. Countries shown are the union of each source's top four since 1990."
+#| fig-height: 3.4
+for_report(tar_read(fig_contrib_Diphtheria)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-contrib-pertussis
+#| fig-cap: "Pertussis: contribution of the largest countries to the global totals."
+#| fig-height: 3.4
+for_report(tar_read(fig_contrib_Pertussis)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-contrib-tetanus
+#| fig-cap: "Tetanus: contribution of the largest countries to the global totals."
+#| fig-height: 3.4
+for_report(tar_read(fig_contrib_Tetanus)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: tbl-top-reporters
+#| tbl-cap: "Largest contributors to the WHO-reported global total in selected years (cases and share of the global total)."
+top_reporters |>
+  transmute(Disease = cause, Year = year, `Global total` = num(global),
+            `Top three countries` = top, `Top-three share` = pct(top_share)) |>
+  kbl_pdf(align = "llrlr") |>
+  column_spec(4, width = "8.2cm") |>
+  collapse_rows(columns = 1, valign = "top", latex_hline = "major")
+```
+
 At country level (@fig-change, @tbl-change), reported and modelled cases move in the same direction from one year to the next in `r pct(val(change_summary, "Pertussis", "same_direction"))` of country-years for pertussis, which is little better than chance. The figure is `r pct(val(change_summary, "Tetanus", "same_direction"))` for tetanus and `r pct(val(change_summary, "Diphtheria", "same_direction"))` for diphtheria.
 
 ```{r}
@@ -299,14 +464,56 @@ change_summary |>
 for_report(tar_read(fig_change)) + theme_dtp(base_size = 8)
 ```
 
+# What explains these patterns? {#sec-explanations}
+
+A research brief compiled from official documentation and the literature [@researchbrief] checked each pattern in this report against published sources. Most of the discrepancies follow from documented GBD 2023 modelling choices, and two are artefacts of the WHO data. @tbl-explanations summarises the findings; the full brief, with quotations and page references, is in `docs/research_brief.md`.
+
+```{r}
+#| label: tbl-explanations
+#| tbl-cap: "Patterns in this report and what the documentation says about them. Status: Explained = a source states it; Plausible = a source describes a mechanism that fits; Artefact = a feature of the WHO data."
+tibble::tribble(
+  ~Pattern, ~Explanation, ~Status, ~Sources,
+  "Pertussis reports about 0.6% of GBD", paste0("GBD fits a regression to WHO notifications, then gives every country Switzerland's random effect, assuming Switzerland reports completely. Switzerland's own ratio in our data is ", pct(median(che_pert$reporting_rate)), "."), "Explained", "GBD 2023 nonfatal appendix; GBD pertussis 2026",
+  "Diphtheria ratios of exactly 1", "New in GBD 2023: estimates below the WHO count are replaced by the count (also for pertussis, not tetanus).", "Explained", "GBD 2023 nonfatal appendix",
+  "Diphtheria and tetanus above GBD where GBD is near zero", "Incidence = modelled deaths / case-fatality ratio, so few deaths give near-zero incidence. Tetanus has no floor. European diphtheria cases are largely cutaneous or imported; GBD counts respiratory diphtheria.", "Plausible", "GBD 2023 appendices; Brockhaus 2024",
+  "Tetanus above GBD in Uganda, Kenya, Angola, CAR", "Death-derived incidence with high case-fatality ratios in low-HAQ settings; no country-specific documentation found.", "Plausible", "GBD 2023 nonfatal appendix",
+  "Year-to-year changes do not line up", "GBD estimates vary only with smoothed covariates (5-year DTP3, masking) and smoothed deaths; GBD reports country concordance with WHO of r = -0.10 for pertussis in 2023.", "Partly documented", "GBD pertussis 2026; Li 2026",
+  "Reporting rate higher where DTP3 is higher", "Partly built in: DTP3 is a covariate in all three GBD models. Surveillance sensitivity also tracks income.", "Plausible", "Li 2026; Chongqing 2025",
+  "GBD pertussis dip 2020-2021", "Driven by a mask-use covariate added in GBD 2023, not by notifications.", "Explained", "GBD 2023 nonfatal appendix",
+  "WHO pertussis surge 2024", "Post-COVID-19 immunity gap and wider PCR testing; China's new case criteria from 2024.", "Explained", "ECDC 2024; Chongqing 2025",
+  "China pertussis reporting rate rising", "PCR confirmation accepted from 2017; broader criteria from 2024; also genuine resurgence and macrolide resistance.", "Explained", "Chongqing 2025; Dai 2024",
+  "India tetanus collapse after 2019", "From 2022 India's total tetanus equals its neonatal count; non-neonatal cases are no longer reported. Excluded here.", "Artefact", "GHO API",
+  "Persistent zero reporters", "Many are blanks (no report), not zeros. Pertussis surveillance may be sentinel-only, so a zero is not evidence of absence.", "Artefact / plausible", "GHO API; WHO 2018 standards"
+) |>
+  kbl_pdf() |>
+  column_spec(1, width = "3.3cm") |>
+  column_spec(2, width = "7.6cm") |>
+  column_spec(3, width = "1.7cm") |>
+  column_spec(4, width = "2.6cm")
+```
+
+Three implications follow for how the reporting rate should be read.
+
+- **Pertussis:** the absolute level rests on the Switzerland assumption. GBD's own sensitivity analysis shows alternative reference choices would change the scaling by a factor of 0.39 to 0.0069 [@gbdpertussis2026]. Comparisons over time within a country are more robust than levels between countries.
+- **Diphtheria:** ratios near 1 are copies, not agreement, and ratios above 1 in GBD 2023 point to WHO figures added or revised after GBD's data freeze, or to case definitions that differ (cutaneous diphtheria).
+- **Tetanus:** the ratio compares notifications with a death-based estimate. A ratio above 1 is not over-reporting in itself; in high-income settings the notification is probably the better count.
+
+The brief also found that this is not a new question for pertussis: two 2026 papers compare GBD and WHO pertussis data directly [@gbdpertussis2026; @li2026]. No published reconciliation was found for diphtheria or tetanus, and the 50-year EPI impact analysis used GBD 2021 burden for DTP without reconciling it with WHO cases [@shattock2024].
+
 # Limitations
 
-- **The sources are not independent.** GBD uses WHO case notifications as an input for at least some of these causes. Close agreement, especially for diphtheria, partly reflects that rather than independent confirmation.
-- **Reports can exceed GBD's estimates.** This happens in many tetanus country-years. GHO "total tetanus" may include cases outside GBD's case definition, or GBD's tetanus model may give reports less weight. In those settings the ratio is not a completeness measure.
+- **The sources are not independent.** GBD uses WHO notifications as its main input for pertussis and as a floor for diphtheria (@sec-explanations). Close agreement partly reflects that rather than independent confirmation.
+- **Reports can exceed GBD's estimates.** This happens mainly where GBD's death-derived estimate is near zero, and for tetanus in parts of Africa. In those settings the ratio is not a completeness measure.
 - **The threshold excludes many country-years.** The 10-case threshold removes most diphtheria country-years in low-incidence settings. Variability results for diphtheria rest on `r val(cause_summary, "Diphtheria", "countries")` countries.
 - **More years widen the range.** The fold range is the gap between a country's most extreme years, so it grows with the number of years observed. Compare it across causes, not with summaries based on fewer years.
 - **GBD estimates are smoothed over time.** Year-to-year movement in the ratio therefore mostly reflects reported cases, not the model.
-- **Only all-age, both-sex totals are compared.** GHO case counts are not disaggregated, so age patterns cannot be compared.
+- **Only all-age, both-sex totals are compared.** GHO case counts are not disaggregated, so age patterns cannot be compared. A cleaner tetanus comparison would set WHO neonatal tetanus against GBD tetanus in neonates, which needs an age-specific GBD export.
+- **Floored and pandemic years are kept in the rate analysis.** Floored diphtheria and pertussis country-years, and pertussis in 2020-2022, are labelled but not excluded. Excluding them is a natural sensitivity analysis.
+
+# References {.unnumbered}
+
+::: {#refs}
+:::
 
 # Appendix {.appendix}
 

@@ -48,7 +48,8 @@ fi
 # old for current targets.
 Rscript --vanilla - <<'EOF'
 needed <- c(xfun = "0.52", knitr = "1.50", rmarkdown = "2.29", fs = "0", countrycode = "0",
-            targets = "1.11", tarchetypes = "0.13", quarto = "1.4", kableExtra = "1.4")
+            targets = "1.11", tarchetypes = "0.13", quarto = "1.4", kableExtra = "1.4",
+            ggrepel = "0.9", ggplot2 = "4.0")
 outdated <- names(needed)[vapply(names(needed), function(p) {
   !requireNamespace(p, quietly = TRUE) || packageVersion(p) < needed[[p]]
 }, logical(1))]

@@ -5,7 +5,7 @@ library(targets)
 library(tarchetypes)
 
 tar_option_set(
-  packages = c("dplyr", "tidyr", "readr", "ggplot2", "jsonlite", "countrycode")
+  packages = c("dplyr", "tidyr", "readr", "ggplot2", "jsonlite", "countrycode", "ggrepel")
 )
 
 tar_source("R")
@@ -17,6 +17,8 @@ MIN_MODELLED_CASES <- 10
 MIN_YEARS_WITH_RATE <- 4
 # GHO is re-downloaded when the cached copy is older than this
 GHO_MAX_AGE <- as.difftime(30, units = "days")
+# Window for the country-level breakdowns of the latest years
+RECENT_YEARS <- 2019:2023
 
 causes <- tibble::tibble(cause = c("Diphtheria", "Pertussis", "Tetanus"))
 heatmap_parts <- tidyr::crossing(causes, part = 1:2)
@@ -38,7 +40,8 @@ list(
   tar_target(gbd_raw, read_gbd_exports(gbd_files)),
   tar_target(gbd_location_map, gbd_locations(gbd_raw)),
   tar_target(gbd, clean_gbd(gbd_raw, gbd_location_map)),
-  tar_target(merged, merge_sources(gbd, gho_cases, gho_coverage, MIN_MODELLED_CASES)),
+  tar_target(reporting_issues, known_reporting_issues()),
+  tar_target(merged, merge_sources(gbd, gho_cases, gho_coverage, reporting_issues, MIN_MODELLED_CASES)),
   tar_target(coverage_mismatch, country_coverage_mismatch(gbd, gho_cases)),
   # GBD has no incidence before 1990
   tar_target(analysis_data, dplyr::filter(merged, year >= 1990)),
@@ -53,6 +56,15 @@ list(
   tar_target(trends, global_trends(gbd, gho_cases)),
   tar_target(changes, change_pairs(analysis_data, MIN_MODELLED_CASES)),
   tar_target(change_summary, change_agreement(changes)),
+
+  # ---- Country-level detail --------------------------------------------------
+  tar_target(classified, classify_agreement(analysis_data, MIN_MODELLED_CASES)),
+  tar_target(shares_by_region, agreement_shares(classified, RECENT_YEARS, "who_region")),
+  tar_target(shares_by_gbd_band, agreement_shares(classified, RECENT_YEARS, "gbd_band")),
+  tar_target(silent, silent_countries(classified, RECENT_YEARS)),
+  tar_target(exceeding, exceeding_countries(classified, max(RECENT_YEARS))),
+  tar_target(series, country_series(gbd, gho_cases, gbd_location_map)),
+  tar_target(top_reporters, top_reporters_by_year(series, c(2010, 2019, 2023, 2024, 2025))),
 
   # ---- Figures -------------------------------------------------------------
   tar_target(fig_scatter, plot_reported_vs_modelled(analysis_data)),
@@ -72,9 +84,19 @@ list(
       format = "file"
     )
   ),
+  tar_target(fig_shares_region, plot_agreement_shares(shares_by_region, NULL)),
+  tar_target(fig_shares_band, plot_agreement_shares(shares_by_gbd_band, "GBD modelled cases per year")),
   tar_map(
     values = causes,
     tar_target(fig_trajectories, plot_trajectories(analysis_data, cause)),
+    tar_target(fig_labelled, plot_labelled_scatter(classified, cause, max(RECENT_YEARS))),
+    tar_target(fig_contrib, plot_contributions(series, cause)),
+    tar_target(
+      fig_country_files,
+      c(save_plot(fig_labelled, paste0("labelled_scatter_", tolower(cause)), width = 9, height = 7),
+        save_plot(fig_contrib, paste0("contributions_", tolower(cause)), width = 11, height = 5)),
+      format = "file"
+    ),
     tar_target(
       fig_trajectories_file,
       save_plot(fig_trajectories, paste0("trajectories_", tolower(cause)), width = 11, height = 8),
@@ -91,7 +113,9 @@ list(
       save_plot(fig_disagreement, "disagreement_ranking", width = 10, height = 10),
       save_plot(fig_dtp3, "reporting_rate_vs_dtp3", width = 11, height = 4.8),
       save_plot(fig_trends, "global_trends", width = 11, height = 4.8),
-      save_plot(fig_change, "change_reported_vs_modelled", width = 11, height = 4.8)
+      save_plot(fig_change, "change_reported_vs_modelled", width = 11, height = 4.8),
+      save_plot(fig_shares_region, "agreement_by_region", width = 9, height = 7),
+      save_plot(fig_shares_band, "agreement_by_gbd_size", width = 9, height = 7)
     ),
     format = "file"
   ),
@@ -105,10 +129,18 @@ list(
       save_csv(dtp3_assoc, "dtp3_association"),
       save_csv(trends, "global_trends"),
       save_csv(change_summary, "change_direction_agreement"),
-      save_csv(coverage_mismatch, "country_coverage_mismatch")
+      save_csv(coverage_mismatch, "country_coverage_mismatch"),
+      save_csv(classified, "country_year_agreement"),
+      save_csv(silent, "silent_countries_recent"),
+      save_csv(exceeding, "countries_exceeding_gbd")
     ),
     format = "file"
   ),
+
+  # ---- Interactive explorer --------------------------------------------------
+  tar_target(explorer_template, "explorer/template.html", format = "file"),
+  tar_target(explorer_data, build_explorer_data(analysis_data, classified, gho_cases, gbd_location_map, gho_coverage)),
+  tar_target(explorer, write_explorer(explorer_data, explorer_template, "explorer.html"), format = "file"),
 
   # ---- Report --------------------------------------------------------------
   tar_quarto(report, "report.qmd")
