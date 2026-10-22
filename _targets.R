@@ -20,6 +20,15 @@ GHO_MAX_AGE <- as.difftime(30, units = "days")
 # Window for the country-level breakdowns of the latest years
 RECENT_YEARS <- 2019:2023
 
+# Settings for the VIMC calibration-targets section (calibration_targets.qmd)
+# Window for WHO reporting completeness in the 117 VIMC countries
+VIMC_COMPLETENESS_YEARS <- 2000:2024
+# Window for per-country reporting rates: pre-COVID and inside GBD 2023
+VIMC_RATE_YEARS <- 2010:2019
+# Years on which GBD 2023 diphtheria floors cluster (inferred from the data,
+# see calibration_targets.qmd); used only to colour the floor figure
+GBD_FLOOR_YEARS <- c(seq(1990, 2020, 5), 2022)
+
 causes <- tibble::tibble(cause = c("Diphtheria", "Pertussis", "Tetanus"))
 heatmap_parts <- tidyr::crossing(causes, part = 1:2)
 
@@ -143,5 +152,48 @@ list(
   tar_target(explorer, write_explorer(explorer_data, explorer_template, "explorer.html"), format = "file"),
 
   # ---- Report --------------------------------------------------------------
-  tar_quarto(report, "report.qmd")
+  tar_quarto(report, "report.qmd"),
+
+  # ==========================================================================
+  # ---- START: VIMC calibration targets (calibration_targets.qmd) -----------
+  # What the GBD and WHO data offer as calibration targets for DTPBoost in the
+  # 117 VIMC countries. Reuses gho_cases, analysis_data and gho_coverage from
+  # above; functions are in R/calibration.R.
+  # ==========================================================================
+  tar_target(vimc, vimc_countries()),
+  tar_target(vimc_cases, vimc_gho_cases(gho_cases, vimc)),
+  tar_target(vimc_data, vimc_analysis_data(analysis_data, vimc)),
+  tar_target(vimc_completeness, reporting_completeness(vimc_cases, vimc, VIMC_COMPLETENESS_YEARS)),
+  tar_target(vimc_completeness_summary, completeness_summary(vimc_completeness, length(VIMC_COMPLETENESS_YEARS))),
+  tar_target(vimc_burstiness, diphtheria_burstiness(vimc_cases, 2000:2025)),
+  tar_target(vimc_burstiness_summary, burstiness_summary(vimc_burstiness, nrow(vimc))),
+  tar_target(floored_years, floored_by_year(analysis_data, GBD_FLOOR_YEARS)),
+  tar_target(vimc_rates, vimc_country_rates(vimc_data, VIMC_RATE_YEARS)),
+  tar_target(vimc_rates_summary, vimc_rate_summary(vimc_rates)),
+  tar_target(vimc_cross, cross_disease_rates(vimc_rates)),
+  tar_target(vimc_pop, vimc_population(vimc_data)),
+  tar_target(vimc_diph_tiles, diphtheria_tiles(vimc_cases, vimc_burstiness, 2000:2025)),
+  tar_target(vimc_table, vimc_country_table(vimc, vimc_cases, vimc_completeness, vimc_rates, vimc_burstiness,
+                                            vimc_data, gho_coverage)),
+
+  tar_target(fig_floored_years, plot_floored_years(floored_years)),
+  tar_target(fig_diph_tiles, plot_diphtheria_tiles(vimc_diph_tiles)),
+  tar_target(fig_vimc_rates, plot_vimc_rates(vimc_rates)),
+  tar_target(fig_cross_disease, plot_cross_disease(vimc_cross)),
+  tar_target(fig_population, plot_population(vimc_pop)),
+  tar_target(
+    calibration_files,
+    c(
+      save_plot(fig_floored_years, "calibration_gbd_floored_years", width = 9, height = 5.5),
+      save_plot(fig_diph_tiles, "calibration_diphtheria_reports", width = 10, height = 8),
+      save_plot(fig_vimc_rates, "calibration_reporting_rates", width = 9, height = 4.5),
+      save_plot(fig_cross_disease, "calibration_cross_disease", width = 11, height = 4.5),
+      save_plot(fig_population, "calibration_small_populations", width = 8, height = 5),
+      save_csv(vimc_table, "vimc117_country_summary")
+    ),
+    format = "file"
+  ),
+
+  tar_quarto(calibration_report, "calibration_targets.qmd")
+  # ---- END: VIMC calibration targets ---------------------------------------
 )

@@ -1,0 +1,455 @@
+---
+title: "Calibration targets for DTPBoost in the VIMC countries"
+subtitle: "What GBD 2023 and WHO reported cases can support, how to choose reporting rates, and open questions for the calibration discussion"
+date: today
+date-format: "D MMMM YYYY"
+abstract: |
+  DTPBoost will produce diphtheria, tetanus and pertussis burden estimates for 117 countries for VIMC. This note sets out which data can serve as calibration targets, how reporting rates can be chosen defensibly, and why diphtheria needs a different approach. It builds on the GBD-WHO comparison in this repository, restricted here to the 117 VIMC countries. Whether the model needs genuinely stochastic runs is left open for discussion, with a proposed test to settle it.
+format:
+  pdf:
+    documentclass: scrartcl
+    pdf-engine: xelatex
+    papersize: a4
+    fontsize: 10pt
+    geometry:
+      - margin=2.2cm
+    mainfont: TeX Gyre Pagella
+    sansfont: TeX Gyre Heros
+    linestretch: 1.15
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    colorlinks: true
+    linkcolor: "blue"
+    fig-pos: "H"
+    tbl-cap-location: top
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+        \usepackage{longtable}
+        \floatplacement{table}{H}
+        \addtokomafont{disposition}{\sffamily}
+        \setkomafont{caption}{\small}
+        \setkomafont{captionlabel}{\small\bfseries}
+bibliography: references.bib
+link-citations: true
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: cairo_pdf
+    fig.width: 6.5
+    fig.align: center
+---
+
+```{r}
+#| label: setup
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+tar_source("R")
+
+vimc <- tar_read(vimc)
+vimc_cases <- tar_read(vimc_cases)
+vimc_data <- tar_read(vimc_data)
+comp_summary <- tar_read(vimc_completeness_summary)
+burst <- tar_read(vimc_burstiness_summary)
+floored_years <- tar_read(floored_years)
+rates_summary <- tar_read(vimc_rates_summary)
+cross <- tar_read(vimc_cross)
+pop <- tar_read(vimc_pop)
+vimc_table <- tar_read(vimc_table)
+
+pct <- function(x, digits = 0) paste0(formatC(100 * x, format = "f", digits = digits), "%")
+num <- function(x) formatC(x, format = "d", big.mark = ",")
+val <- function(df, cz, col) df[[col]][df$cause == cz]
+rate_txt <- function(x) pct_label(x)
+
+completeness_years <- 2000:2024
+rate_years <- 2010:2019
+
+# Diphtheria floors: share on GBD estimation-like years
+floor_diph <- filter(floored_years, cause == "Diphtheria")
+floor_pert <- filter(floored_years, cause == "Pertussis")
+floor_diph_total <- sum(floor_diph$n)
+floor_diph_on <- sum(floor_diph$n[floor_diph$estimation_year])
+floor_pert_on <- sum(floor_pert$n[floor_pert$estimation_year]) / sum(floor_pert$n)
+floored_vimc <- vimc_data |> filter(gbd_floored, cause == "Diphtheria")
+
+# Years with no WHO report (null) for a country's diphtheria series
+null_years <- function(iso, years) {
+  d <- filter(vimc_cases, cause == "Diphtheria", iso3 == iso, year %in% years)
+  missing <- setdiff(years, d$year[!is.na(d$reported_cases)])
+  if (length(missing) == 0) return("none")
+  rng <- range(missing)
+  if (length(missing) == diff(rng) + 1 && length(missing) > 1) paste0(rng[1], "-", rng[2]) else paste(missing, collapse = ", ")
+}
+diph_cases <- function(iso, yr) {
+  x <- vimc_cases$reported_cases[vimc_cases$cause == "Diphtheria" & vimc_cases$iso3 == iso & vimc_cases$year == yr]
+  if (length(x) == 0 || is.na(x)) "no report" else num(x)
+}
+
+# Neonatal share of WHO total tetanus, 2015-2019, country-years with both
+nt_share <- tar_read(gho_cases) |>
+  filter(iso3 %in% vimc$iso3_gho, year %in% 2015:2019, cause %in% c("Tetanus", "Neonatal tetanus")) |>
+  select(iso3, year, cause, reported_cases) |>
+  pivot_wider(names_from = cause, values_from = reported_cases) |>
+  filter(!is.na(Tetanus), !is.na(`Neonatal tetanus`), Tetanus > 0) |>
+  summarise(share = sum(`Neonatal tetanus`) / sum(Tetanus)) |>
+  pull(share)
+
+n_small_1m <- sum(pop$population < 1e6)
+n_small_100k <- sum(pop$population < 1e5)
+pop_range <- range(pop$population)
+
+kbl_pdf <- function(x, ...) {
+  kbl(x, booktabs = TRUE, linesep = "", ...) |>
+    kable_styling(latex_options = "HOLD_position", font_size = 9)
+}
+```
+
+# Summary
+
+- **Reporting rates are a nuisance parameter. The real question is what fixes the absolute level of true burden.** VIMC asks for true cases and deaths. A reporting rate matters only because, when the model is fitted to notifications, it trades off against transmission: "a lot of disease, poorly reported" fits as well as "little disease, well reported". Something other than notifications has to set the level, and what is available differs by disease.
+- **The sources are not independent.** GBD pertussis incidence is WHO notifications scaled to Switzerland's reporting level, and in about 60 of the 117 countries GBD pertussis deaths are that incidence times a case-fatality ratio. GBD diphtheria incidence is floored at the WHO count. Only for tetanus are GBD deaths and WHO cases two separate pieces of evidence (@sec-independence).
+- **GBD diphtheria incidence cannot show outbreaks.** `r num(floor_diph_on)` of the `r num(floor_diph_total)` diphtheria country-years where GBD 2023 equals the WHO count fall in 1990, 1995, ..., 2020 or 2022, against `r pct(floor_pert_on)` of pertussis floors. This suggests GBD diphtheria is estimated on a few years and interpolated between them, so outbreaks between those years, such as India, Yemen and Ethiopia in 2017-2019, barely register (@sec-floors).
+- **Reporting completeness varies about 200-fold between countries, and covariates explain little of it.** In 2010-2019 the median VIMC country's pertussis reporting rate is `r rate_txt(val(rates_summary, "Pertussis", "median"))` (10th-90th percentile `r rate_txt(val(rates_summary, "Pertussis", "p10"))`-`r rate_txt(val(rates_summary, "Pertussis", "p90"))`). Within the 117, DTP3 coverage hardly predicts the rate, and a country's tetanus and pertussis rates are only weakly correlated (Spearman `r sprintf("%.2f", cross$stats$spearman[1])`). A hierarchical model for reporting rates will mostly shrink countries towards a regional mean with wide uncertainty (@sec-rates).
+- **Sentinel and active-surveillance sites should be fitted as incidence targets, not used as reporting rates.** A site measures true, age-specific incidence in a catchment. The model's incidence for that age group is fitted to it, and the national reporting rate follows as notifications divided by model incidence (@sec-sentinel).
+- **Proposed targets.** Tetanus: GBD deaths by age, with WHO neonatal tetanus cases and elimination status as constraints. Pertussis: GBD level with its Switzerland assumption carried as a shared uncertain scaling, and WHO notifications for shape. Diphtheria: natural history fitted across countries, decadal targets for the background level, and a separate outbreak layer fitted to outbreak occurrence pooled over all countries (@sec-targets).
+- **Stochastic runs remain open.** VIMC's 200 runs can be parameter draws for tetanus. For diphtheria, and for pertussis in the `r n_small_1m` VIMC countries with fewer than one million people, process stochasticity may change the burden and impact estimates. @sec-stochastic proposes a test to decide before committing.
+
+# Context
+
+DTPBoost is three age-structured compartmental models, one each for diphtheria, tetanus and pertussis, linked by shared vaccine doses. For VIMC it must produce, for each of 117 countries, cases, deaths and DALYs by single year of age and calendar year from 2000 to 2100 under several coverage scenarios. Uncertainty comes as 200 runs per scenario.^[From VIMC's output templates (a meningitis A project). Each `run_id` is one row of a parameters file with no country column, so a `run_id` is most likely one parameter set used for every country. Regional and global uncertainty would then come from summing countries within each `run_id`. The earlier calibration-strategy discussion (21 October) proposed splitting parameters into *universal* ones, drawn once per `run_id`, and *country-specific* ones (transmission and reporting), fitted per country conditional on each universal draw.] VIMC's model standards ask modellers to document "how fitting accounts for data limitations (e.g. under-reporting of cases)" [@vimcstandards]. The first phase of VIMC did not include DTP [@gaythorpe2024], so there is no consortium precedent for these three diseases.
+
+This note uses the two sources already compared in this repository [@comparisonreport; @researchbrief], restricted to the 117 VIMC countries:
+
+- **WHO reported cases** from the Global Health Observatory (GHO): diphtheria (`WHS3_41`), pertussis (`WHS3_43`), total tetanus (`WHS3_46`) and neonatal tetanus (`WHS3_56`). These are annual national totals from the WHO/UNICEF Joint Reporting Form, with no age breakdown [@whojrf].
+- **GBD 2023** incidence and deaths, all ages, 1990-2023 [@gbd2023nonfatal; @gbd2023cod].
+
+GBD has no separate estimates for Kosovo, so GBD-based results cover `r n_distinct(vimc_data$iso3)` countries.^[GBD includes Kosovo in Serbia. Kosovo is in the WHO series as `XKX`.] The VIMC countries range in population from about `r num(round(pop_range[1], -3))` to `r formatC(pop_range[2] / 1e9, format = "f", digits = 1)` billion (GBD 2023).
+
+# What the data can offer
+
+## Which sources are independent {#sec-independence}
+
+The research brief traced how each GBD estimate is made [@researchbrief]. For calibration the key question is whether two sources are separate evidence or the same evidence counted twice (@tbl-independence).
+
+```{r}
+#| label: tbl-independence
+#| tbl-cap: "How each quantity is produced, and whether it is independent of WHO notifications. VR: vital registration; VA: verbal autopsy; CFR: case-fatality ratio."
+tibble::tribble(
+  ~Disease, ~`GBD incidence`, ~`GBD deaths`, ~`WHO reported cases`,
+  "Pertussis", "Regression on WHO notifications; every country given Switzerland's random effect (assumed 100% reporting)", "CODEm in 64 data-rich locations; elsewhere incidence x CFR, so same scaling (about 60 of the 117)", "Primary input to GBD incidence",
+  "Diphtheria", "Deaths / CFR; floored at WHO count; few estimation years (Section 3.2)", "CODEm where data allow; elsewhere covariate model (DTP3, HAQ), post-2019 data dropped", "Used only as GBD's floor",
+  "Tetanus", "Deaths / CFR", "CODEm everywhere (VR, VA, surveillance)", "Not used by GBD: independent"
+) |>
+  kbl_pdf() |>
+  column_spec(1, bold = TRUE, width = "1.6cm") |>
+  column_spec(2:3, width = "5.2cm") |>
+  column_spec(4, width = "3.2cm")
+```
+
+Three consequences follow.
+
+1. **Pertussis.** Fitting both GBD incidence and WHO notifications fits the WHO data twice. Fitting GBD incidence alone adopts GBD's assumption that every country has Switzerland's attack rate in the unvaccinated, scaled by coverage. GBD's own sensitivity analysis shows that other reference choices would scale incidence by 0.39 (mean of the top five random effects) down to 0.0069 (no reference) [@gbdpertussis2026]. GBD pertussis deaths are an independent check only where CODEm runs on vital registration.^[GBD's natural-history path (deaths = incidence x CFR) covers all 46 sub-Saharan African locations, all five South Asian ones and 20 of 21 in North Africa and the Middle East [@researchbrief]. Counting the VIMC countries in those GBD super-regions gives roughly 60 of 117. The exact list should come from GBD's location metadata rather than this count.]
+2. **Diphtheria.** GBD incidence is death-driven and smooth. Where it equals the WHO count, that is GBD copying the WHO figure, not agreement.
+3. **Tetanus.** GBD deaths come from cause-of-death data, and WHO notifications do not enter GBD at all. Tetanus is the one disease where the GBD/WHO ratio is a meaningful completeness estimate, as long as the model's case-fatality ratio rather than GBD's is used to turn deaths into cases.
+
+## GBD diphtheria floors fall on a few years {#sec-floors}
+
+GBD 2023 replaces its diphtheria and pertussis estimates with the WHO count wherever the model falls below it [@gbd2023nonfatal]. If the floor were applied every year, floored country-years would be spread over all years. For diphtheria they are not (@fig-floors): `r num(floor_diph_on)` of `r num(floor_diph_total)` fall in years ending in 0 or 5, or in 2022. Pertussis floors are spread evenly, because pertussis is an annual regression.
+
+```{r}
+#| label: fig-floors
+#| fig-cap: "GBD 2023 country-years within 1% of the WHO count, by year, all 204 countries. Diphtheria floors fall almost entirely on 1990, 1995, ..., 2020 and 2022."
+#| fig-height: 4.6
+for_report(tar_read(fig_floored_years))
+```
+
+The likely explanation is that GBD estimates diphtheria incidence on a set of estimation years, applies the floor there, and interpolates between them.^[Earlier GBD rounds produced non-fatal estimates on five-yearly estimation years and interpolated. We could not confirm the GBD 2023 year list from the published appendix, so this is an inference from the pattern in the data.] For calibration this means GBD's annual diphtheria incidence carries no outbreak signal between estimation years. The 2017-2019 outbreaks in India, Yemen and Ethiopia appear in GBD only through interpolation, so it should be used only as a long-run level, if at all. In the VIMC countries, `r nrow(floored_vimc)` diphtheria country-years in `r n_distinct(floored_vimc$iso3)` countries are floored, mostly 1990-2000 in the former Soviet Union.
+
+## WHO reporting completeness in the 117 countries
+
+@tbl-completeness summarises how much of each WHO series exists in `r min(completeness_years)`-`r max(completeness_years)`. GHO stores a missing report as null and a reported zero as 0; the two are kept apart throughout. Each country is assigned a **data tier** by the number of years with a positive count: A (15 or more), B (5-14) and C (fewer than 5).
+
+```{r}
+#| label: tbl-completeness
+#| tbl-cap: !expr paste0("WHO reported-case series for the 117 VIMC countries, ", min(completeness_years), "-", max(completeness_years), " (", length(completeness_years), " years).")
+comp_summary |>
+  transmute(
+    Disease = cause,
+    `Reported >= 80% of years` = most_years_reported,
+    `Reported < 10 years` = few_years_reported,
+    `Zero in >= half of reported years` = mostly_zero,
+    `Never a positive count` = never_positive,
+    `Tier A` = tier_a, `Tier B` = tier_b, `Tier C` = tier_c
+  ) |>
+  kbl_pdf(align = c("l", rep("r", 7))) |>
+  add_header_above(c(" " = 1, "Countries" = 4, "Data tier (positive years)" = 3)) |>
+  column_spec(2:5, width = "1.9cm")
+```
+
+Diphtheria stands out: `r val(comp_summary, "Diphtheria", "tier_c")` of 117 countries have fewer than five positive years, and `r val(comp_summary, "Diphtheria", "never_positive")` never reported a case. For pertussis and tetanus, most countries have a usable series, but `r val(comp_summary, "Pertussis", "mostly_zero")` countries report zero pertussis in at least half the years they report. Under WHO's minimum standard, pertussis surveillance can be sentinel-only [@whovpd2018], so these zeros are not evidence of absence. Tiers for each country are in the appendix (@tbl-appendix).
+
+## Implied reporting rates {#sec-rates}
+
+For each country, the implied reporting rate is the WHO count divided by GBD incidence, in years where GBD estimates at least 10 cases, excluding floored years. @fig-rates and @tbl-rates summarise it for `r min(rate_years)`-`r max(rate_years)`, before COVID-19 and within GBD 2023.
+
+```{r}
+#| label: fig-rates
+#| fig-cap: !expr paste0("Implied reporting rate per VIMC country, ", min(rate_years), "-", max(rate_years), ". Each point is one country's geometric mean over years with a non-zero rate.")
+#| fig-height: 3.4
+for_report(tar_read(fig_vimc_rates))
+```
+
+```{r}
+#| label: tbl-rates
+#| tbl-cap: !expr paste0("Implied reporting rate (WHO / GBD), VIMC countries, ", min(rate_years), "-", max(rate_years), ". Country rates are geometric means over non-zero years. Within-country SD is of log10(rate) for countries with at least 4 non-zero years.")
+rates_summary |>
+  transmute(
+    Disease = cause,
+    `Country-years` = num(country_years),
+    `Zero reported` = pct(zero_share),
+    Countries = countries,
+    `10th pct` = pct_label(p10),
+    Median = pct_label(median),
+    `90th pct` = pct_label(p90),
+    `Within-country SD` = sprintf("%.2f", median_sd_log10),
+    `Spearman with DTP3` = sprintf("%.2f", spearman_dtp3)
+  ) |>
+  kbl_pdf(align = c("l", rep("r", 8))) |>
+  add_header_above(c(" " = 4, "Country rate" = 3, " " = 2))
+```
+
+Four points matter for calibration.
+
+- **The spread between countries is large.** For pertussis the 10th-90th percentile range of country rates covers more than two orders of magnitude. No single reporting rate fits all countries.
+- **Year-to-year variation within a country is about two- to threefold** (a within-country SD of log10 rate of `r sprintf("%.2f", val(rates_summary, "Pertussis", "median_sd_log10"))` for pertussis is a factor of `r sprintf("%.1f", 10^val(rates_summary, "Pertussis", "median_sd_log10"))`). Much of this is real epidemic variation that GBD smooths away, not changes in reporting. A negative binomial likelihood on multi-year aggregates absorbs it better than a time-varying reporting rate.
+- **DTP3 coverage barely predicts the rate within the VIMC set** (Spearman `r sprintf("%.2f", min(rates_summary$spearman_dtp3))` to `r sprintf("%.2f", max(rates_summary$spearman_dtp3))`). The strong DTP3 relationship in the full comparison [@comparisonreport] is driven by high-income countries, and is partly built in because GBD uses DTP3 as a covariate.
+- **Completeness is only weakly shared across diseases** (@fig-cross). A country that reports tetanus well does not reliably report pertussis well, so one disease's reporting rate cannot stand in for another's.
+
+```{r}
+#| label: fig-cross
+#| fig-cap: "Country reporting rates for pairs of diseases, VIMC countries, 2010-2019. The dashed line is equality."
+#| fig-height: 3.4
+#| fig-width: 7.5
+for_report(tar_read(fig_cross_disease))
+```
+
+# Choosing reporting rates defensibly
+
+## The reporting rate is a nuisance; the level is the problem
+
+Write the expected notifications in country $c$ and year $t$ as
+$$
+\mathbb{E}[C_{ct}] = \rho_{ct}\, I_{ct}(\theta),
+$$
+where $I_{ct}(\theta)$ is the model's true incidence under parameters $\theta$ and $\rho_{ct}$ is the reporting rate. VIMC receives $I(\theta)$ and the deaths that follow, never $C$. So $\rho$ matters only through its effect on $\theta$. Given the model trajectory, the best $\rho$ is cheap: under a Poisson likelihood $\hat\rho = \sum_t C_{ct} / \sum_t I_{ct}(\theta)$, and a gamma prior integrates it out in closed form. That does not resolve the problem. Notifications alone identify the *shape* of incidence over time (trend, response to coverage, epidemic period) but not its *level*, because $\rho$ and transmission trade off. Defending a reporting rate therefore really means defending whatever sets the level. @tbl-anchors lists the candidates.
+
+```{r}
+#| label: tbl-anchors
+#| tbl-cap: "Candidate data for anchoring the absolute level of true burden. Studies are examples to follow up, not a systematic search."
+tibble::tribble(
+  ~Anchor, ~`What it measures`, ~Strengths, ~Weaknesses,
+  "GBD incidence", "Modelled true incidence, all ages", "All countries; comparability with other GBD-based estimates", "Pertussis: Switzerland assumption. Diphtheria: interpolated, floored. Tetanus: GBD's own CFR",
+  "GBD deaths", "Modelled deaths", "Tetanus: CODEm from VR/VA in every country. Pertussis: CODEm in VR countries", "Pertussis: not independent in about 60 VIMC countries. Diphtheria: mostly covariate-driven",
+  "Sentinel / active surveillance", "True incidence or deaths in a catchment and age group", "Direct measure of disease, often with lab confirmation", "Few sites; unrepresentative catchments; mostly infants",
+  "Serosurveys", "Age-specific antibody levels", "Best data on waning; independent of reporting", "Infection or vaccination, not disease; few surveys; assay thresholds",
+  "Elimination status (MNTE)", "Neonatal tetanus < 1 per 1,000 live births in every district", "Hard upper constraint for validated countries", "Binary; district-level, not national"
+) |>
+  kbl_pdf() |>
+  column_spec(1, bold = TRUE, width = "2.4cm") |>
+  column_spec(2:4, width = "4.1cm")
+```
+
+## Using sentinel sites {#sec-sentinel}
+
+The suggestion to use sentinel surveillance sites as a proxy for reporting rates is sound, provided the site enters as an **incidence target** rather than as a reporting rate copied across. A site measures true incidence $I^{\text{site}}_{a}$ in a catchment, usually for one age group $a$ (often infants). The model's incidence for that age group, $I_{a}(\theta)$, is fitted to it, and the national reporting rate then follows from notifications:
+$$
+\rho_c = \frac{C_c}{I_c(\theta)} \quad \text{with } \theta \text{ constrained by } I_{a}(\theta) \approx I^{\text{site}}_{a}.
+$$
+This keeps the site's age group and catchment intact. It also lets the site constrain the universal parameters (age profile, waning) shared by every country, rather than only the one country it sits in. Examples worth following up, all in VIMC countries:
+
+- **Nepal (Sarlahi):** weekly active surveillance of 3,483 infants from birth to six months found 13.3 PCR-confirmed pertussis cases per 1,000 infant-years [@hughes2017].
+- **Zambia (Lusaka, ZPRIME):** post-mortem PCR in 2,236 infants aged 4 days to 6 months who died attributed 0.22-0.81% of infant deaths to pertussis [@macleod2025]. This bounds infant pertussis mortality, which can be compared with GBD's Zambian pertussis deaths.
+- **PERCH** (Kenya, Gambia, Mali, Zambia, South Africa, Bangladesh, Thailand): pertussis was detected in 1.3% of children hospitalised with severe pneumonia, against 0.2% of community controls [@bargerkamate2016]. This gives a severe-disease fraction rather than an incidence.
+- **CHAMPS** child mortality surveillance sites (Bangladesh, Ethiopia, Kenya, Mali, Mozambique, Sierra Leone, South Africa), for causes of death determined by minimally invasive tissue sampling.
+
+Three cautions apply. Sites are rarely representative: they are often urban or research-supported, with better access to care, which raises ascertainment and lowers case fatality. Most measure infants only, so they constrain the infant end of the age profile, the part that maternal and primary vaccination act on. And their study years seldom match the years with the best national data.
+
+## A hierarchical model for reporting rates
+
+For the countries with usable notification series (tiers A and B), a hierarchical model pools information:
+$$
+\log \rho_{c,d} = \alpha_{d,r(c)} + \beta_d^\top x_c + u_{c,d}, \qquad u_{c,d} \sim N(0, \sigma_d^2),
+$$
+for disease $d$, WHO region $r(c)$ and country covariates $x_c$. Candidate covariates are the type of surveillance (case-based national, aggregate, or sentinel), service coverage or HAQ index, and DTP1 rather than DTP3.^[DTP1 measures contact with the health system without the mechanical link to GBD's DTP3 covariate. Whether the eJRF records surveillance type for each disease and year should be checked; if it does, that is likely the most informative covariate.] Sentinel-site estimates enter as additional data on $\rho$ for their country, through the fitted model. @sec-rates shows what to expect: covariates explain little, so most countries will be shrunk towards their regional mean with an uncertainty of one to two orders of magnitude for pertussis.
+
+That wide uncertainty is acceptable, because $\rho$ has no direct effect on VIMC outputs. For tier C countries the notifications carry so little information that the level has to come from elsewhere anyway: GBD, regional pooling of the transmission parameters, or both. $\rho$ is then needed only to report fitted notifications, not to calibrate.
+
+## Time variation, nulls and zeros
+
+- **Piecewise-constant $\rho$.** Change it only at documented surveillance changes: China pertussis in 2017 (PCR accepted) and 2024 (new criteria); India total tetanus from 2020; Pakistan pertussis around 1989 [@researchbrief]. Let a negative binomial overdispersion term absorb the remaining year-to-year noise.
+- **Nulls are missing.** A null contributes nothing to the likelihood. Several large outbreaks have no WHO report for some of their years (@sec-diphtheria).
+- **Zeros from sentinel systems are lower bounds.** Treat a reported zero as an observation only where surveillance is nationwide and case-based. Otherwise treat it as censored or leave it out.
+- **Drop floored GBD years** from any target built on GBD diphtheria or pertussis incidence.
+- **Use the 2024-2025 WHO data as a holdout.** They fall after GBD 2023 and include the post-COVID pertussis surge.
+
+# Proposed targets by disease {#sec-targets}
+
+@tbl-targets summarises the proposal; the sections below explain it.
+
+```{r}
+#| label: tbl-targets
+#| tbl-cap: "Proposed calibration targets. 'Universal' parameters are drawn once per run_id and shared by all countries; 'country' parameters are fitted per country."
+tibble::tribble(
+  ~Disease, ~`Primary target`, ~`Secondary / constraints`, ~`Fitted per country`, ~`Avoid`,
+  "Tetanus", "GBD deaths by age (neonatal; older), 1990-2023", "WHO neonatal and total tetanus cases (own rho each); MNTE status", "Exposure rate; rho", "GBD incidence (uses GBD's CFR); India total tetanus from 2020",
+  "Pertussis", "GBD incidence level, with Switzerland scaling as a universal uncertain multiplier", "WHO notifications for shape (multi-year, negative binomial); sentinel infant incidence; GBD deaths in VR countries", "Transmission; rho (piecewise)", "Fitting GBD and WHO as independent; annual phase matching; 2020-2022 without an NPI term",
+  "Diphtheria", "Decadal GBD deaths or 5-10-year cumulative notifications", "Outbreak occurrence (pooled); outbreak age distributions and CFRs; serology", "Little: coverage history drives differences", "Annual GBD incidence; annual country time series"
+) |>
+  kbl_pdf() |>
+  column_spec(1, bold = TRUE, width = "1.5cm") |>
+  column_spec(2:3, width = "3.9cm") |>
+  column_spec(4, width = "2.6cm") |>
+  column_spec(5, width = "3.4cm")
+```
+
+## Tetanus
+
+Tetanus is the cleanest case and the natural place to test the calibration pipeline.^[The model has no person-to-person transmission, so incidence is close to proportional to the exposure rate. Each universal parameter row then needs about one model run per country (earlier calibration-strategy discussion, 21 October).]
+
+- **Primary target: GBD deaths by age**, split at least into neonatal and older, for 1990-2023. Deaths are GBD's direct product for tetanus. GBD incidence is those deaths divided by GBD's own case-fatality ratio, which would conflict with DTPBoost's.
+- **WHO neonatal tetanus** (`WHS3_56`) comes from nationwide case-based surveillance, the strongest WHO series of the four. Neonatal cases make up only `r pct(nt_share)` of total tetanus reported by VIMC countries in 2015-2019, so neonatal and non-neonatal tetanus need separate reporting rates.
+- **Elimination status** is a hard constraint. A country validated as having eliminated maternal and neonatal tetanus has fewer than one neonatal tetanus case per 1,000 live births in every district [@whomnte], so the model's national neonatal rate must sit well below that.
+- **Data needed:** an age-specific GBD export of tetanus deaths (the repository holds all-age totals only).
+
+## Pertussis
+
+- **Level.** Fitting GBD incidence is defensible if the report says plainly that GBD's ascertainment assumption is adopted. Its uncertainty should be carried as a **universal** multiplier $\kappa$ on the GBD level, drawn once per `run_id`, for example log-uniform between 0.39 and 1.^[The lower bound is GBD's own result for using the mean of the top five random effects instead of Switzerland's [@gbdpertussis2026]. Because $\kappa$ is shared by all countries within a `run_id`, it widens regional and global uncertainty correctly instead of averaging out across countries.]
+- **Shape.** Fit WHO notifications with a country reporting rate, using a negative binomial likelihood on multi-year aggregates or smoothed trends. A deterministic model's 3-5-year cycles will not match the observed epidemic years, and annual fitting would penalise that as error.
+- **Independent checks.** Sentinel infant incidence (@sec-sentinel), and GBD deaths only in vital-registration countries.
+- **2020-2022.** Either add a contact reduction for the pandemic years or leave them out of the targets. GBD's dip in those years comes from a mask-use covariate, not from data [@gbdpertussis2026].
+- **Age distribution.** Where case-based surveillance reports age, the infant share of cases is the most useful extra target for a model whose purpose is to compare booster schedules.
+
+## Diphtheria {#sec-diphtheria}
+
+Diphtheria in the VIMC countries is a disease of rare, concentrated outbreaks (@fig-diph). Between 2000 and 2025, `r burst$countries_none` of the 117 countries reported no cases at all, and ten countries (`r burst$top10`) account for `r pct(burst$top10_share)` of the `r num(burst$total)` cases reported. Among the `r burst$countries_big` countries with at least 100 cases, a median `r pct(burst$median_top3)` of each country's 26-year total falls in its three worst years, and `r burst$median_year_zero` of the `r burst$countries_any` countries with any cases reported zero in the median year.
+
+```{r}
+#| label: fig-diph
+#| fig-cap: "Diphtheria cases reported to WHO, 2000-2025, VIMC countries with at least 100 cases. Grey cells are reported zeros; outlined blank cells are years with no report."
+#| fig-height: 7
+#| fig-width: 7.5
+for_report(tar_read(fig_diph_tiles))
+```
+
+Several outbreaks have years with no WHO report: Nigeria has no report for `r null_years("NGA", 2019:2022)`, before reporting `r diph_cases("NGA", 2023)` cases in 2023; Ethiopia has none for `r null_years("ETH", 2022:2025)`; Chad has none for `r null_years("TCD", 2018:2022)`. Outbreak reports from WHO and its regional offices can fill some of these gaps [@bitafouda2025]. Most African cases in 2023-2024 were classified as clinically compatible rather than laboratory-confirmed [@bitafouda2025], so the reporting rate can be close to or above 1 relative to true respiratory diphtheria.
+
+With so few events per country, country-specific transmission parameters are not identifiable. A two-layer approach is proposed:
+
+1. **Background layer (DTPBoost as it is).** Fit the natural-history parameters ($R_0$, waning, case fatality) globally or by region, so that differences between countries come from their coverage histories. Fit to long-run targets: decadal GBD deaths, or cumulative notifications over 5-10-year windows with a reporting rate.
+2. **Outbreak layer.** Model the probability of an outbreak in country $c$ and year $t$ as a function of the immunity gap from the background layer:
+$$
+\operatorname{logit} p_{ct} = \gamma_0 + \gamma_1 \left(R^{\text{eff}}_{ct} - 1\right) + \gamma_2^\top z_{ct},
+$$
+where $z_{ct}$ holds conflict or displacement indicators. Fit it to outbreak occurrence (for example, a year above a threshold or several times the country's baseline), **pooled over all country-years**, since it is the outbreaks that carry the information. Outbreak size would come from the susceptible pool, calibrated to the size distribution of observed outbreaks. This is similar in spirit to the VIMC yellow fever model, which fits a regression to the occurrence of reported outbreaks and uses serosurveys to convert it to a force of infection [@garske2014; @gaythorpe2021yf].
+
+**Validation targets.** Outbreak age distributions test waning and booster assumptions directly. Examples are the shift of cases to school-age children in Vietnam [@kitamura2022; @kitamura2023] and the Rohingya outbreak in Cox's Bazar, with 7,064 cases from November 2017 to November 2019 and a median age of 10 [@polonsky2021]. Age-specific antitoxin serosurveys measure waning without depending on reporting [@kitamura2022].
+
+The heavyweight alternative is a fully stochastic version of the diphtheria model with importations, fitted by approximate Bayesian computation to pooled summaries: the share of country-years with no cases, the outbreak size distribution and the age distribution of cases. This links to the next section.
+
+# Stochastic runs: an open question {#sec-stochastic}
+
+"Stochastic" has two meanings here that are easy to conflate.
+
+- **VIMC's stochastic runs.** VIMC requires 200 runs per scenario. These are settled. For a deterministic model each run is one parameter draw, and the same `run_id` must use the same draw in every scenario so that impact is a paired difference.
+- **Process stochasticity.** Whether the model itself should be stochastic: random infection events, extinction and reintroduction. This is still open.
+
+```{r}
+#| label: tbl-stochastic
+#| tbl-cap: "Arguments for and against process stochasticity, by disease."
+tibble::tribble(
+  ~Disease, ~`For a stochastic model`, ~`Against`, ~`Current view`,
+  "Tetanus", "None material: no transmission", "Linear model; the deterministic mean is exact", "Deterministic",
+  "Pertussis", "Fade-out and reintroduction in small populations; outbreak timing interacts with booster timing", "Large populations behave close to the deterministic mean; cost of 200 x scenarios x 117", "Deterministic unless the test below shows bias in small countries",
+  "Diphtheria", "Outbreaks are the burden; a deterministic model gives either a smooth endemic level or extinction", "Data too sparse to fit a stochastic model per country; impact noise between scenarios", "Hybrid outbreak layer, or fully stochastic"
+) |>
+  kbl_pdf() |>
+  column_spec(1, bold = TRUE, width = "1.6cm") |>
+  column_spec(2:3, width = "5cm") |>
+  column_spec(4, width = "3.4cm")
+```
+
+Population size matters most for pertussis. `r n_small_1m` VIMC countries have fewer than one million people and `r n_small_100k` fewer than 100,000 (@fig-pop). In populations that small, a deterministic model keeps fractional infections circulating indefinitely, where in reality transmission dies out and returns with importations. Whether that changes average burden or vaccine impact enough to matter is an empirical question.
+
+```{r}
+#| label: fig-pop
+#| fig-cap: "VIMC countries with fewer than one million people (GBD 2023). Dashed lines mark 100,000 and 1 million."
+#| fig-height: 4.2
+for_report(tar_read(fig_population))
+```
+
+Two design points apply whichever way this is decided.
+
+- **Couple random draws across scenarios.** If outbreaks or infection events are random, the no-vaccination and vaccination scenarios of a `run_id` must share random numbers. Otherwise noise swamps the impact estimate. In the outbreak layer this is simple: draw one uniform $U_{ctk}$ per country, year and `run_id` $k$, and let an outbreak occur under scenario $s$ when $U_{ctk} < p_{cts}$. Since higher coverage lowers $p$, the outbreaks under a better scenario are always a subset of those under a worse one.^[Coupling a fully stochastic transmission model is harder: trajectories diverge after the first different event, even with common random numbers. This is one argument for the hybrid layer over a fully stochastic diphtheria model.]
+- **A hybrid layer counts as stochastic.** A deterministic background plus a coupled outbreak layer produces genuinely stochastic runs, one realisation per `run_id`, which is what VIMC's wording asks for.
+
+**A test to settle it.** Build a stochastic version of the pertussis and diphtheria models (for example, a binomial tau-leap of the same equations) and run it for about six countries spanning population size and coverage: say Tuvalu, São Tomé and Príncipe, Bhutan, Lao PDR, Kenya and Nigeria. Use a handful of parameter draws and about 200 replicates each. Compare the stochastic mean with the deterministic run for burden and for vaccine impact (no vaccination minus default) over 2000-2030. If the difference is small relative to the spread across parameter draws in all but the smallest countries, keep pertussis deterministic and treat small populations separately. The threshold for "small" is itself a decision for the discussion.
+
+# Questions for the calibration discussion
+
+1. **Stochasticity.** Do we accept the test in @sec-stochastic as the way to decide? Is the hybrid outbreak layer acceptable for diphtheria, or do we want a fully stochastic model?
+2. **Pertussis level.** Do we adopt GBD's level with a universal uncertainty multiplier $\kappa$, or anchor it independently (sentinel incidence, deaths in vital-registration countries)? What range should $\kappa$ have?
+3. **Reporting-rate model.** Is a hierarchical model with regional means and weak covariates acceptable, given that $\rho$ does not reach the VIMC outputs? Which covariates do we trust?
+4. **Diphtheria outbreak definition.** What threshold defines an outbreak year (absolute count, rate per 100,000, or multiple of baseline)? Should the outbreak model be fitted on all 204 countries to gain events?
+5. **Data to obtain.** (a) An age-specific GBD export of deaths for all three diseases in the 117 countries. (b) GBD's list of locations where pertussis deaths come from CODEm rather than incidence x CFR. (c) MNTE validation status by country and year. (d) Outbreak reports to fill WHO nulls. (e) Diphtheria and tetanus serosurveys in VIMC countries. (f) Surveillance type by disease from the eJRF, if recorded.
+6. **What to ask VIMC.** Are `run_id`s shared across countries, and where should country-specific fitted parameters go? Does VIMC expect process stochasticity for outbreak diseases?
+
+# Limitations of this note
+
+- **The sentinel studies are examples.** They were not found by a systematic search; one is needed before any is used as a target.
+- **The estimation-year explanation for diphtheria floors is inferred** from the data, not confirmed in GBD's documentation.
+- **Reporting rates are computed against GBD.** For pertussis they inherit GBD's Switzerland scaling, so they are relative, not absolute. For diphtheria and tetanus they compare notifications with a death-derived estimate.
+- **WHO data change.** GHO is re-downloaded by the pipeline, and countries can revise past years, so values in this note may shift slightly between builds.
+
+# References {.unnumbered}
+
+::: {#refs}
+:::
+
+# Appendix {.appendix}
+
+The full per-country table, with GBD 2019 incidence and deaths, floored years and diphtheria burstiness, is written to `output/tables/vimc117_country_summary.csv` by the pipeline. @tbl-appendix shows the main columns.
+
+```{r}
+#| label: tbl-appendix
+#| tbl-cap: !expr paste0("Data available per VIMC country. Tier from positive WHO years ", min(completeness_years), "-", max(completeness_years), " (A: 15+, B: 5-14, C: < 5). Rates are geometric-mean WHO/GBD ratios ", min(rate_years), "-", max(rate_years), "; blank where no rate could be computed.")
+tier_letter <- function(x) substr(x, 1, 1)
+rate_fmt <- function(x) ifelse(is.na(x), "", pct_label(x))
+vimc_table |>
+  arrange(who_region, country) |>
+  transmute(
+    Region = who_region,
+    Country = country,
+    D = tier_letter(diphtheria_tier),
+    P = tier_letter(pertussis_tier),
+    T = tier_letter(tetanus_tier),
+    `Positive years D/P/T` = paste(diphtheria_years_positive, pertussis_years_positive, tetanus_years_positive, sep = "/"),
+    Diphtheria = rate_fmt(diphtheria_rate_2010_2019),
+    Pertussis = rate_fmt(pertussis_rate_2010_2019),
+    Tetanus = rate_fmt(tetanus_rate_2010_2019),
+    `DTP3 2023` = ifelse(is.na(dtp3_2023), "", paste0(round(dtp3_2023), "%"))
+  ) |>
+  kbl(booktabs = TRUE, longtable = TRUE, linesep = "", align = c("l", "l", "c", "c", "c", "c", "r", "r", "r", "r")) |>
+  kable_styling(latex_options = c("repeat_header"), font_size = 7.5) |>
+  add_header_above(c(" " = 2, "Data tier" = 3, " " = 1, "Reporting rate" = 3, " " = 1)) |>
+  collapse_rows(columns = 1, valign = "top", latex_hline = "major")
+```

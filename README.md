@@ -5,6 +5,7 @@ Compares the burden of diphtheria, tetanus and pertussis as estimated by GBD 202
 Outputs:
 
 - **`report.pdf`** is the write-up, rendered from `report.qmd`.
+- **`calibration_targets.pdf`** applies the comparison to the 117 VIMC countries and proposes calibration targets and a reporting-rate approach for DTPBoost, with open questions for the calibration discussion. It is rendered from `calibration_targets.qmd`.
 - **`explorer.html`** is an interactive companion. Download it and open it in a web browser; it needs an internet connection to load its charting library. It has three views:
   - the reported-vs-modelled scatter for any disease and year, with every country named on hover and a sortable table;
   - global totals broken down by country;
@@ -30,8 +31,10 @@ Only out-of-date targets are rebuilt. GHO data are re-downloaded when the cached
 | `R/analysis.R` | Variability, disagreement ranking, DTP3 association, trends |
 | `R/country_detail.R` | Country-level classification, "silent" and over-reporting countries, contributions to global totals |
 | `R/plots.R`, `R/utils.R` | Figure functions, palette and theme |
+| `R/calibration.R` | VIMC-country subset: WHO completeness, data tiers, diphtheria burstiness, GBD floor years, reporting rates, figures for `calibration_targets.qmd` |
 | `R/explorer.R`, `explorer/template.html` | Builds `explorer.html` from the template with the pipeline's data embedded |
 | `report.qmd`, `references.bib` | Quarto report and its bibliography; the report reads results with `tar_read()` |
+| `calibration_targets.qmd` | Calibration-targets note for the VIMC countries; its targets are in the marked "VIMC calibration targets" section at the end of `_targets.R` |
 | `output/figures/`, `output/tables/` | PNG figures and CSV tables written by the pipeline |
 | `docs/research_prompt.md` | Prompt given to a research assistant to search the documentation and literature |
 | `docs/research_brief.md` (`.docx`) | The resulting brief: how both datasets are produced and what explains each pattern, with sources |
