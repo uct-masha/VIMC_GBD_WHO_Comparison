@@ -80,6 +80,8 @@ floor_pert <- filter(floored_years, cause == "Pertussis")
 floor_diph_total <- sum(floor_diph$n)
 floor_diph_on <- sum(floor_diph$n[floor_diph$estimation_year])
 floor_pert_on <- sum(floor_pert$n[floor_pert$estimation_year]) / sum(floor_pert$n)
+n_est_years <- n_distinct(floor_diph$year[floor_diph$estimation_year])
+n_all_years <- n_distinct(floor_diph$year)
 floored_vimc <- vimc_data |> filter(gbd_floored, cause == "Diphtheria")
 
 # Years with no WHO report (null) for a country's diphtheria series
@@ -118,7 +120,7 @@ kbl_pdf <- function(x, ...) {
 
 - **Reporting rates are a nuisance parameter. The real question is what fixes the absolute level of true burden.** VIMC asks for true cases and deaths. A reporting rate matters only because, when the model is fitted to notifications, it trades off against transmission: "a lot of disease, poorly reported" fits as well as "little disease, well reported". Something other than notifications has to set the level, and what is available differs by disease.
 - **The sources are not independent.** GBD pertussis incidence is WHO notifications scaled to Switzerland's reporting level, and in about 60 of the 117 countries GBD pertussis deaths are that incidence times a case-fatality ratio. GBD diphtheria incidence is floored at the WHO count. Only for tetanus are GBD deaths and WHO cases two separate pieces of evidence (@sec-independence).
-- **GBD diphtheria incidence cannot show outbreaks.** `r num(floor_diph_on)` of the `r num(floor_diph_total)` diphtheria country-years where GBD 2023 equals the WHO count fall in 1990, 1995, ..., 2020 or 2022, against `r pct(floor_pert_on)` of pertussis floors. This suggests GBD diphtheria is estimated on a few years and interpolated between them, so outbreaks between those years, such as India, Yemen and Ethiopia in 2017-2019, barely register (@sec-floors).
+- **GBD diphtheria incidence cannot show outbreaks.** `r num(floor_diph_on)` of the `r num(floor_diph_total)` diphtheria country-years where GBD 2023 equals the WHO count fall in 1990, 1995, ..., 2020 or 2022. Those `r n_est_years` years are `r pct(n_est_years / n_all_years)` of 1990-2023, and they hold `r pct(floor_pert_on)` of pertussis floors, about what chance would give. This suggests GBD diphtheria is estimated on a few years and interpolated between them, so outbreaks between those years, such as India, Yemen and Ethiopia in 2017-2019, barely register (@sec-floors).
 - **Reporting completeness varies about 200-fold between countries, and covariates explain little of it.** In 2010-2019 the median VIMC country's pertussis reporting rate is `r rate_txt(val(rates_summary, "Pertussis", "median"))` (10th-90th percentile `r rate_txt(val(rates_summary, "Pertussis", "p10"))`-`r rate_txt(val(rates_summary, "Pertussis", "p90"))`). Within the 117, DTP3 coverage hardly predicts the rate, and a country's tetanus and pertussis rates are only weakly correlated (Spearman `r sprintf("%.2f", cross$stats$spearman[1])`). A hierarchical model for reporting rates will mostly shrink countries towards a regional mean with wide uncertainty (@sec-rates).
 - **Sentinel and active-surveillance sites should be fitted as incidence targets, not used as reporting rates.** A site measures true, age-specific incidence in a catchment. The model's incidence for that age group is fitted to it, and the national reporting rate follows as notifications divided by model incidence (@sec-sentinel).
 - **Proposed targets.** Tetanus: GBD deaths by age, with WHO neonatal tetanus cases and elimination status as constraints. Pertussis: GBD level with its Switzerland assumption carried as a shared uncertain scaling, and WHO notifications for shape. Diphtheria: natural history fitted across countries, decadal targets for the background level, and a separate outbreak layer fitted to outbreak occurrence pooled over all countries (@sec-targets).
@@ -181,7 +183,7 @@ The likely explanation is that GBD estimates diphtheria incidence on a set of es
 
 ```{r}
 #| label: tbl-completeness
-#| tbl-cap: !expr paste0("WHO reported-case series for the 117 VIMC countries, ", min(completeness_years), "-", max(completeness_years), " (", length(completeness_years), " years).")
+#| tbl-cap: !expr 'paste0("WHO reported-case series for the 117 VIMC countries, ", min(completeness_years), "-", max(completeness_years), " (", length(completeness_years), " years).")'
 comp_summary |>
   transmute(
     Disease = cause,
@@ -204,14 +206,14 @@ For each country, the implied reporting rate is the WHO count divided by GBD inc
 
 ```{r}
 #| label: fig-rates
-#| fig-cap: !expr paste0("Implied reporting rate per VIMC country, ", min(rate_years), "-", max(rate_years), ". Each point is one country's geometric mean over years with a non-zero rate.")
+#| fig-cap: !expr 'paste0("Implied reporting rate per VIMC country, ", min(rate_years), "-", max(rate_years), ". Each point is one country''s geometric mean over years with a non-zero rate.")'
 #| fig-height: 3.4
 for_report(tar_read(fig_vimc_rates))
 ```
 
 ```{r}
 #| label: tbl-rates
-#| tbl-cap: !expr paste0("Implied reporting rate (WHO / GBD), VIMC countries, ", min(rate_years), "-", max(rate_years), ". Country rates are geometric means over non-zero years. Within-country SD is of log10(rate) for countries with at least 4 non-zero years.")
+#| tbl-cap: !expr 'paste0("Implied reporting rate (WHO / GBD), VIMC countries, ", min(rate_years), "-", max(rate_years), ". Country rates are geometric means over non-zero years. Within SD is the median within-country SD of log10(rate), for countries with at least 4 non-zero years. The last column is the Spearman correlation of country rate with mean DTP3 coverage.")'
 rates_summary |>
   transmute(
     Disease = cause,
@@ -221,11 +223,11 @@ rates_summary |>
     `10th pct` = pct_label(p10),
     Median = pct_label(median),
     `90th pct` = pct_label(p90),
-    `Within-country SD` = sprintf("%.2f", median_sd_log10),
-    `Spearman with DTP3` = sprintf("%.2f", spearman_dtp3)
+    `Within SD` = sprintf("%.2f", median_sd_log10),
+    `vs DTP3` = sprintf("%.2f", spearman_dtp3)
   ) |>
   kbl_pdf(align = c("l", rep("r", 8))) |>
-  add_header_above(c(" " = 4, "Country rate" = 3, " " = 2))
+  add_header_above(c(" " = 4, "Country rate" = 3, "Median" = 1, "Spearman" = 1))
 ```
 
 Four points matter for calibration.
@@ -311,8 +313,8 @@ That wide uncertainty is acceptable, because $\rho$ has no direct effect on VIMC
 #| tbl-cap: "Proposed calibration targets. 'Universal' parameters are drawn once per run_id and shared by all countries; 'country' parameters are fitted per country."
 tibble::tribble(
   ~Disease, ~`Primary target`, ~`Secondary / constraints`, ~`Fitted per country`, ~`Avoid`,
-  "Tetanus", "GBD deaths by age (neonatal; older), 1990-2023", "WHO neonatal and total tetanus cases (own rho each); MNTE status", "Exposure rate; rho", "GBD incidence (uses GBD's CFR); India total tetanus from 2020",
-  "Pertussis", "GBD incidence level, with Switzerland scaling as a universal uncertain multiplier", "WHO notifications for shape (multi-year, negative binomial); sentinel infant incidence; GBD deaths in VR countries", "Transmission; rho (piecewise)", "Fitting GBD and WHO as independent; annual phase matching; 2020-2022 without an NPI term",
+  "Tetanus", "GBD deaths by age (neonatal; older), 1990-2023", "WHO neonatal and total tetanus cases (own reporting rate each); MNTE status", "Exposure rate; reporting rate", "GBD incidence (uses GBD's CFR); India total tetanus from 2020",
+  "Pertussis", "GBD incidence level, with Switzerland scaling as a universal uncertain multiplier", "WHO notifications for shape (multi-year, negative binomial); sentinel infant incidence; GBD deaths in VR countries", "Transmission; reporting rate (piecewise)", "Fitting GBD and WHO as independent; annual phase matching; 2020-2022 without an NPI term",
   "Diphtheria", "Decadal GBD deaths or 5-10-year cumulative notifications", "Outbreak occurrence (pooled); outbreak age distributions and CFRs; serology", "Little: coverage history drives differences", "Annual GBD incidence; annual country time series"
 ) |>
   kbl_pdf() |>
@@ -431,7 +433,7 @@ The full per-country table, with GBD 2019 incidence and deaths, floored years an
 
 ```{r}
 #| label: tbl-appendix
-#| tbl-cap: !expr paste0("Data available per VIMC country. Tier from positive WHO years ", min(completeness_years), "-", max(completeness_years), " (A: 15+, B: 5-14, C: < 5). Rates are geometric-mean WHO/GBD ratios ", min(rate_years), "-", max(rate_years), "; blank where no rate could be computed.")
+#| tbl-cap: !expr 'paste0("Data available per VIMC country. Tier from positive WHO years ", min(completeness_years), "-", max(completeness_years), " (A: 15+, B: 5-14, C: < 5). Rates are geometric-mean WHO/GBD ratios ", min(rate_years), "-", max(rate_years), "; blank where no rate could be computed.")'
 tier_letter <- function(x) substr(x, 1, 1)
 rate_fmt <- function(x) ifelse(is.na(x), "", pct_label(x))
 vimc_table |>

@@ -208,7 +208,9 @@ diphtheria_tiles <- function(vimc_cases, burstiness, years, min_total = 100) {
 
 # Everything per country in one table, written to output/tables
 vimc_country_table <- function(vimc, vimc_cases, completeness, country_rates, burstiness, vimc_data, gho_coverage) {
-  regions <- distinct(vimc_cases, iso3, who_region)
+  # GHO gives Kosovo no WHO region; WHO reports it with the European Region
+  regions <- distinct(vimc_cases, iso3, who_region) |>
+    mutate(who_region = if_else(iso3 == "XKX", "Europe", who_region))
   comp <- completeness |>
     select(iso3, cause, years_reported, years_positive, tier) |>
     mutate(cause = tolower(cause)) |>
@@ -300,16 +302,16 @@ plot_cross_disease <- function(cross) {
       filter(!is.na(xv), !is.na(yv))
   }
   d <- bind_rows(panel("Tetanus", "Pertussis"), panel("Tetanus", "Diphtheria"), panel("Pertussis", "Diphtheria"))
-  labs_df <- cross$stats |>
-    transmute(pair = paste(y, "vs", x), label = sprintf("Spearman %.2f (n = %d)", spearman, n))
+  strip <- cross$stats |>
+    transmute(pair = paste(y, "vs", x),
+              strip = sprintf("%s vs %s\nSpearman %.2f (n = %d)", y, x, spearman, n))
+  d <- left_join(d, strip, by = "pair")
   ggplot(d, aes(xv, yv)) +
     geom_abline(slope = 1, intercept = 0, colour = axis_col, linetype = "dashed") +
     geom_point(colour = ink_secondary, size = 1.4, alpha = 0.7) +
-    geom_text(data = labs_df, aes(label = label), x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
-              size = 3, colour = ink_secondary, inherit.aes = FALSE) +
     scale_x_log10(labels = pct_label) +
     scale_y_log10(labels = pct_label) +
-    facet_wrap(~pair, scales = "free") +
+    facet_wrap(~strip, scales = "free") +
     labs(
       title = "Reporting completeness is only weakly shared across diseases",
       subtitle = "Each point is a VIMC country's 2010-2019 geometric-mean reporting rate; dashed line is equality",

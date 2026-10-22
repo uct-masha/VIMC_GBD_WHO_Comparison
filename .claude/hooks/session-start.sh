@@ -14,7 +14,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt_packages=(
   r-base-core r-cran-jsonlite r-cran-httr r-cran-dplyr r-cran-tidyr
   r-cran-readr r-cran-ggplot2 r-cran-purrr r-cran-stringr
-  libuv1-dev
+  r-cran-igraph r-cran-xml2 r-cran-textshaping r-cran-systemfonts r-cran-svglite
+  libuv1-dev libglpk40
   texlive-xetex texlive-luatex texlive-latex-recommended texlive-latex-extra
   texlive-fonts-recommended texlive-fonts-extra texlive-plain-generic
   texlive-science texlive-pictures lmodern fonts-lmodern fonts-texgyre
@@ -55,7 +56,15 @@ outdated <- names(needed)[vapply(names(needed), function(p) {
 }, logical(1))]
 if (length(outdated)) {
   message("Installing R packages: ", paste(outdated, collapse = ", "))
-  install.packages(outdated, repos = "https://cloud.r-project.org", Ncpus = 4, quiet = TRUE)
+  # Posit Package Manager serves prebuilt Linux binaries (the user agent
+  # selects them), so nothing needs compiling; e.g. igraph needs Fortran.
+  options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(),
+    paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))
+  codename <- system("lsb_release -cs", intern = TRUE)
+  install.packages(outdated, Ncpus = 4, quiet = TRUE, repos = c(
+    p3m = paste0("https://packagemanager.posit.co/cran/__linux__/", codename, "/latest"),
+    cran = "https://cloud.r-project.org"
+  ))
 }
 still_missing <- names(needed)[!vapply(names(needed), requireNamespace, logical(1), quietly = TRUE)]
 if (length(still_missing)) stop("R packages failed to install: ", paste(still_missing, collapse = ", "))
