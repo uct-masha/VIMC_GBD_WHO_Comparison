@@ -1,0 +1,322 @@
+---
+title: "Diphtheria, tetanus and pertussis: GBD 2023 estimates vs WHO reported cases"
+subtitle: "How much does the implied reporting rate vary between countries and over time?"
+date: today
+date-format: "D MMMM YYYY"
+abstract: |
+  We compare GBD 2023 modelled incidence with case counts reported to WHO for diphtheria, tetanus and pertussis in 204 countries, 1990-2023. The ratio of the two, the *implied reporting rate*, varies widely both between and within countries.
+format:
+  pdf:
+    documentclass: scrartcl
+    pdf-engine: xelatex
+    papersize: a4
+    fontsize: 10pt
+    geometry:
+      - margin=2.2cm
+    mainfont: TeX Gyre Pagella
+    sansfont: TeX Gyre Heros
+    linestretch: 1.15
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    colorlinks: true
+    linkcolor: "blue"
+    fig-pos: "H"
+    tbl-cap-location: top
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+        \floatplacement{table}{H}
+        \addtokomafont{disposition}{\sffamily}
+        \setkomafont{caption}{\small}
+        \setkomafont{captionlabel}{\small\bfseries}
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: cairo_pdf
+    fig.width: 6.5
+    fig.align: center
+---
+
+```{r}
+#| label: setup
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+tar_source("R")
+
+cause_summary <- tar_read(cause_summary)
+dtp3_assoc <- tar_read(dtp3_assoc)
+change_summary <- tar_read(change_summary)
+ranking <- tar_read(ranking)
+analysis_data <- tar_read(analysis_data)
+status_counts <- tar_read(status_counts)
+coverage_mismatch <- tar_read(coverage_mismatch)
+trends <- tar_read(trends)
+
+# Formatting helpers for inline values
+pct <- function(x, digits = 0) paste0(formatC(100 * x, format = "f", digits = digits), "%")
+fold <- function(x) paste0(formatC(x, format = "fg", digits = 2), "x")
+num <- function(x) formatC(x, format = "d", big.mark = ",")
+val <- function(df, cz, col) df[[col]][df$cause == cz]
+
+gbd_years <- sort(unique(analysis_data$year))
+n_countries <- n_distinct(analysis_data$iso3)
+most_variable <- cause_summary$cause[which.max(cause_summary$median_fold_range)]
+least_variable <- cause_summary$cause[which.min(cause_summary$median_fold_range)]
+
+kbl_pdf <- function(x, ...) {
+  kbl(x, booktabs = TRUE, linesep = "", ...) |>
+    kable_styling(latex_options = "HOLD_position", font_size = 9)
+}
+```
+
+# Summary
+
+- **Reported cases are a small and unstable fraction of modelled cases.** The median country-year reporting rate is `r pct(val(cause_summary, "Pertussis", "median_rate"), 1)` for pertussis, `r pct(val(cause_summary, "Diphtheria", "median_rate"))` for diphtheria and `r pct(val(cause_summary, "Tetanus", "median_rate"))` for tetanus.
+- **The rate moves a lot within countries.** In a typical country, the highest year's rate is `r fold(val(cause_summary, "Pertussis", "median_fold_range"))` the lowest for pertussis, `r fold(val(cause_summary, "Diphtheria", "median_fold_range"))` for diphtheria and `r fold(val(cause_summary, "Tetanus", "median_fold_range"))` for tetanus. Change over time within countries accounts for `r pct(min(cause_summary$within_share))`-`r pct(max(cause_summary$within_share))` of all variation in the (log) rate; the rest is stable differences between countries.
+- **Year-to-year changes in reported cases barely track GBD's changes.** The correlation of annual log changes is `r round(val(change_summary, "Diphtheria", "cor_change"), 2)` for diphtheria, `r round(val(change_summary, "Pertussis", "cor_change"), 2)` for pertussis and `r round(val(change_summary, "Tetanus", "cor_change"), 2)` for tetanus. GBD's estimates are smooth over time, so year-to-year swings in the rate come almost entirely from reported cases.
+- **DTP3 coverage explains differences between countries more than changes within them.** Countries with higher coverage report a larger share of modelled cases (Spearman `r round(min(dtp3_assoc$spearman_between), 2)`-`r round(max(dtp3_assoc$spearman_between), 2)`), but within a country, coverage and reporting rate move together only weakly.
+- **The sources are not independent.** `r pct(val(cause_summary, "Diphtheria", "pct_within_5pct_of_100"))` of diphtheria country-years have reported cases within 5% of GBD's estimate, and `r pct(val(cause_summary, "Tetanus", "pct_over_100"))` of tetanus country-years report *more* cases than GBD models. Treat the ratio as a measure of agreement between sources, not as true surveillance completeness.
+
+# Data and methods
+
+## Sources
+
+```{r}
+#| label: tbl-sources
+#| tbl-cap: "Data sources."
+tibble::tribble(
+  ~Source, ~Measures, ~Years, ~Breakdown,
+  "GBD 2023 Results Tool", "Incidence and deaths (number, rate) with 95% UI", paste(range(gbd_years), collapse = "-"), "Country; all ages, both sexes",
+  "WHO GHO", "Reported cases; DTP1/DTP3 coverage (WUENIC)", "1974-2025", "Country-year only"
+) |>
+  kbl_pdf() |>
+  column_spec(2, width = "5cm") |>
+  column_spec(4, width = "3.2cm")
+```
+
+GBD estimates come from GBD 2023 Results Tool exports for `r n_countries` countries. Incidence is available annually for `r min(gbd_years)`-`r max(gbd_years)`. GHO case counts are downloaded from the GHO OData API: diphtheria (`WHS3_41`), pertussis (`WHS3_43`) and total tetanus (`WHS3_46`, which includes neonatal tetanus and is compared with GBD "Tetanus"). GHO does not break these counts down by age or sex, so all comparisons use all-age, both-sex totals. Countries are matched on ISO3 codes. `r sum(coverage_mismatch$in_source == "GHO only")` territories appear only in GHO and `r sum(coverage_mismatch$in_source == "GBD only")` only in GBD (Appendix, @tbl-mismatch).
+
+## Implied reporting rate
+
+For each country, cause and year, the **implied reporting rate** is GHO reported cases divided by GBD modelled incidence. It is computed only where GBD estimates at least 10 cases, because below that the ratio is mostly noise. @tbl-status shows how many country-years each rule leaves.
+
+```{r}
+#| label: tbl-status
+#| tbl-cap: "Country-years 1990-2023 by whether a reporting rate can be computed."
+status_counts |>
+  select(Cause = cause, `Rate computed` = ratio, `Zero reported` = `zero reported`,
+         `GBD < 10 cases` = `modelled < threshold`, `Not reported to WHO` = `not reported to WHO`) |>
+  kbl_pdf(align = "lrrrr", format.args = list(big.mark = ","))
+```
+
+Rates are analysed on the log~10~ scale, so a move from 1% to 10% counts the same as a move from 10% to 100%. Years in which a country reported zero cases have no log rate. They are shown separately and are not imputed. Per-country variability is summarised for countries with at least four years with a rate, using:
+
+- the **fold range** (highest ÷ lowest non-zero rate);
+- the SD of log~10~ rate;
+- a linear **trend** in log~10~ rate per decade.
+
+The **within-country share** is the proportion of the total sum of squares of log~10~ rate that lies around each country's own mean.
+
+# Reported vs modelled cases
+
+@fig-scatter compares the two sources country by country. Dashed lines mark reported = 100%, 10% and 1% of modelled, from left to right. Pertussis reports sit one to three orders of magnitude below GBD's estimates. Diphtheria and tetanus scatter around the 10-100% lines, and many diphtheria points lie exactly on the 100% line. Many countries report zero cases even where GBD estimates hundreds or thousands.
+
+```{r}
+#| label: fig-scatter
+#| fig-cap: "WHO-reported cases vs GBD modelled incidence by country, selected years. Dashed lines, left to right: reported = 100%, 10% and 1% of modelled. Points on the bottom edge reported zero cases."
+#| fig-height: 6.2
+for_report(tar_read(fig_scatter)) + theme_dtp(base_size = 8)
+```
+
+# How much does the reporting rate vary over time?
+
+```{r}
+#| label: tbl-variability
+#| tbl-cap: "Within-country variability of the implied reporting rate, 1990-2023. Countries with at least four years with a rate."
+cause_summary |>
+  transmute(
+    Cause = cause,
+    Countries = countries,
+    `Median rate` = pct(median_rate, 1),
+    `Median fold range` = fold(median_fold_range),
+    `Range >= 10x` = pct(pct_countries_10x_range),
+    `Within-country share` = pct(within_share),
+    `Rate rising` = pct(pct_rising)
+  ) |>
+  kbl_pdf(align = "lrrrrrr")
+```
+
+@tbl-variability and @fig-fold-range summarise the spread. `r most_variable` reporting is the least stable: `r pct(val(cause_summary, most_variable, "pct_countries_10x_range"))` of countries have a rate spanning at least a factor of ten. `r least_variable` is the most stable, but `r pct(val(cause_summary, least_variable, "pct_countries_10x_range"))` of countries still span tenfold. Pertussis rates are falling in most countries (`r pct(1 - val(cause_summary, "Pertussis", "pct_rising"))`). Diphtheria and tetanus rates are rising in most.
+
+```{r}
+#| label: fig-fold-range
+#| fig-cap: "Fold range of the implied reporting rate within each country (highest ÷ lowest non-zero rate, 1990-2023). Each point is a country."
+#| fig-height: 2.8
+for_report(tar_read(fig_fold_range)) + theme_dtp(base_size = 9)
+```
+
+## Country-by-year heatmaps
+
+The heatmaps show every country with at least five evaluable years. Darker cells mean a higher reported share of modelled cases. Within each WHO region, countries are sorted by median rate, highest at the top. Grey cells are years with zero reported cases. Blank cells are years with no report to WHO, or with GBD incidence below 10 cases.
+
+```{r}
+#| label: fig-heat-pertussis-1
+#| fig-cap: "Pertussis: implied reporting rate by country and year (Africa, Americas, Eastern Mediterranean)."
+#| fig-height: 8.8
+for_report(tar_read(fig_heatmap_Pertussis_1))
+```
+
+```{r}
+#| label: fig-heat-pertussis-2
+#| fig-cap: "Pertussis: implied reporting rate by country and year (Europe, South-East Asia, Western Pacific)."
+#| fig-height: 8.8
+for_report(tar_read(fig_heatmap_Pertussis_2))
+```
+
+```{r}
+#| label: fig-heat-diphtheria
+#| fig-cap: "Diphtheria: implied reporting rate by country and year. Few countries have five or more years with at least 10 modelled cases."
+#| fig-height: 7
+for_report(tar_read(fig_heatmap_Diphtheria_1))
+```
+
+```{r}
+#| label: fig-heat-diphtheria-2
+#| fig-cap: "Diphtheria: implied reporting rate by country and year (Europe, South-East Asia, Western Pacific)."
+#| fig-height: 4
+for_report(tar_read(fig_heatmap_Diphtheria_2))
+```
+
+```{r}
+#| label: fig-heat-tetanus-1
+#| fig-cap: "Tetanus: implied reporting rate by country and year (Africa, Americas, Eastern Mediterranean)."
+#| fig-height: 8.8
+for_report(tar_read(fig_heatmap_Tetanus_1))
+```
+
+```{r}
+#| label: fig-heat-tetanus-2
+#| fig-cap: "Tetanus: implied reporting rate by country and year (Europe, South-East Asia, Western Pacific)."
+#| fig-height: 4.5
+for_report(tar_read(fig_heatmap_Tetanus_2))
+```
+
+## High-burden countries
+
+@fig-traj-pertussis, @fig-traj-diphtheria and @fig-traj-tetanus follow the reporting rate in the 12 countries with the most modelled cases in `r max(gbd_years)`. Even in large countries with established surveillance, the rate can shift by one or two orders of magnitude within a few years.
+
+```{r}
+#| label: fig-traj-pertussis
+#| fig-cap: "Pertussis: implied reporting rate over time in the 12 highest-burden countries. Log scale; × marks years with zero reported cases; gaps are years with no rate."
+#| fig-height: 6
+for_report(tar_read(fig_trajectories_Pertussis)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-traj-diphtheria
+#| fig-cap: "Diphtheria: implied reporting rate over time in the 12 highest-burden countries."
+#| fig-height: 6
+for_report(tar_read(fig_trajectories_Diphtheria)) + theme_dtp(base_size = 8)
+```
+
+```{r}
+#| label: fig-traj-tetanus
+#| fig-cap: "Tetanus: implied reporting rate over time in the 12 highest-burden countries."
+#| fig-height: 6
+for_report(tar_read(fig_trajectories_Tetanus)) + theme_dtp(base_size = 8)
+```
+
+# Where do the sources disagree most?
+
+Pooling 2020-2023 smooths single-year outbreaks. @fig-disagreement shows the ten countries at each end per cause. At the high end, diphtheria and tetanus reports exceed GBD's estimate several-fold in outbreak and conflict settings. At the low end, `r num(sum(ranking$reported == 0 & ranking$cause == "Pertussis"))` countries reported no pertussis cases at all over four years, despite GBD estimating at least 10 cases a year in each.
+
+```{r}
+#| label: fig-disagreement
+#| fig-cap: "Countries with the highest and lowest reported ÷ modelled cases, 2020-2023 pooled. The vertical line marks reported = modelled. Countries reporting zero throughout are counted in the panel titles."
+#| fig-height: 8.2
+for_report(tar_read(fig_disagreement)) + theme_dtp(base_size = 8)
+```
+
+# Is the reporting rate related to vaccine coverage?
+
+```{r}
+#| label: tbl-dtp3
+#| tbl-cap: "Association between DTP3 coverage and log reporting rate. *Between*: country means. *Within*: deviations from each country's own mean (countries with at least four years)."
+dtp3_assoc |>
+  transmute(
+    Cause = cause, `Country-years` = country_years, Countries = countries,
+    `Spearman, pooled` = round(spearman_pooled, 2),
+    `Spearman, between` = round(spearman_between, 2),
+    `Pearson, within` = round(pearson_within, 2)
+  ) |>
+  kbl_pdf(align = "lrrrrr", format.args = list(big.mark = ","))
+```
+
+Higher DTP3 coverage goes with a higher reporting rate across countries (@tbl-dtp3, @fig-dtp3). For pertussis, the rate rises steeply once coverage passes about 85%. Within countries, the association is much weaker (Pearson `r round(val(dtp3_assoc, "Pertussis", "pearson_within"), 2)` for pertussis, `r round(val(dtp3_assoc, "Tetanus", "pearson_within"), 2)` for tetanus and `r round(val(dtp3_assoc, "Diphtheria", "pearson_within"), 2)` for diphtheria). Coverage mostly marks which countries have stronger health systems and surveillance; it says little about why one country's rate changes over time. Part of this relationship is mechanical, because GBD uses vaccine coverage as a covariate in its incidence models.
+
+```{r}
+#| label: fig-dtp3
+#| fig-cap: "Implied reporting rate vs DTP3 coverage, all country-years 1990-2023. Black line: loess smooth. Excludes zero-report years and GBD incidence below 10 cases."
+#| fig-height: 3
+for_report(tar_read(fig_dtp3)) + theme_dtp(base_size = 8)
+```
+
+# Time trends
+
+GBD shows a smooth decline in all three diseases (@fig-trends). Reported cases are far more volatile: diphtheria reports have risen since the mid-2010s, and pertussis reports reached `r num(max(trends$cases[trends$source == "GHO reported" & trends$cause == "Pertussis" & trends$year >= 2020]))` in `r trends$year[trends$source == "GHO reported" & trends$cause == "Pertussis"][which.max(trends$cases[trends$source == "GHO reported" & trends$cause == "Pertussis"] * (trends$year[trends$source == "GHO reported" & trends$cause == "Pertussis"] >= 2020))]`. GBD's pertussis estimate dips in 2020-2021 and recovers in 2022-2023. Reported totals also depend on how many countries report each year.
+
+```{r}
+#| label: fig-trends
+#| fig-cap: "Global cases, WHO reported vs GBD modelled incidence, summed over countries in both sources. Log scale. Band: sum of country 95% UIs, which overstates the aggregate interval."
+#| fig-height: 3
+for_report(tar_read(fig_trends)) + theme_dtp(base_size = 8)
+```
+
+At country level (@fig-change, @tbl-change), reported and modelled cases move in the same direction from one year to the next in `r pct(val(change_summary, "Pertussis", "same_direction"))` of country-years for pertussis, which is little better than chance. The figure is `r pct(val(change_summary, "Tetanus", "same_direction"))` for tetanus and `r pct(val(change_summary, "Diphtheria", "same_direction"))` for diphtheria.
+
+```{r}
+#| label: tbl-change
+#| tbl-cap: "Agreement between year-on-year country-level changes in reported and modelled cases."
+change_summary |>
+  transmute(Cause = cause, `Country-years` = intervals,
+            `Same direction` = pct(same_direction),
+            `Correlation of log changes` = round(cor_change, 2)) |>
+  kbl_pdf(align = "lrrr", format.args = list(big.mark = ","))
+```
+
+```{r}
+#| label: fig-change
+#| fig-cap: "Year-on-year fold change in reported vs modelled cases, one point per country-year. Dashed line: equal change."
+#| fig-height: 3
+for_report(tar_read(fig_change)) + theme_dtp(base_size = 8)
+```
+
+# Limitations
+
+- **The sources are not independent.** GBD uses WHO case notifications as an input for at least some of these causes. Close agreement, especially for diphtheria, partly reflects that rather than independent confirmation.
+- **Reports can exceed GBD's estimates.** This happens in many tetanus country-years. GHO "total tetanus" may include cases outside GBD's case definition, or GBD's tetanus model may give reports less weight. In those settings the ratio is not a completeness measure.
+- **The threshold excludes many country-years.** The 10-case threshold removes most diphtheria country-years in low-incidence settings. Variability results for diphtheria rest on `r val(cause_summary, "Diphtheria", "countries")` countries.
+- **More years widen the range.** The fold range is the gap between a country's most extreme years, so it grows with the number of years observed. Compare it across causes, not with summaries based on fewer years.
+- **GBD estimates are smoothed over time.** Year-to-year movement in the ratio therefore mostly reflects reported cases, not the model.
+- **Only all-age, both-sex totals are compared.** GHO case counts are not disaggregated, so age patterns cannot be compared.
+
+# Appendix {.appendix}
+
+```{r}
+#| label: tbl-mismatch
+#| tbl-cap: "Countries and territories present in only one source."
+coverage_mismatch |>
+  arrange(in_source, country) |>
+  select(Source = in_source, ISO3 = iso3, Country = country) |>
+  kbl_pdf()
+```
+
+Data: Global Burden of Disease Collaborative Network. *Global Burden of Disease Study 2023 (GBD 2023) Results.* Seattle: IHME, 2024. World Health Organization, Global Health Observatory (accessed `r format(Sys.Date(), "%d %B %Y")`).

@@ -1,0 +1,12 @@
+# targets cache (rebuild with targets::tar_make())
+_targets/
+
+# Quarto / LaTeX byproducts
+report.tex
+report.log
+report_files/
+*.aux
+*.out
+
+.Rhistory
+.RData
