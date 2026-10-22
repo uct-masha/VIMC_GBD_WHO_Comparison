@@ -25,6 +25,7 @@ Only out-of-date targets are rebuilt. GHO data are re-downloaded when the cached
 | `R/plots.R`, `R/utils.R` | Figure functions, palette and theme |
 | `report.qmd` | Quarto report; reads results with `tar_read()` |
 | `output/figures/`, `output/tables/` | PNG figures and CSV tables written by the pipeline |
+| `docs/research_prompt.md` | Brief for a literature/documentation search on how the data are produced and what explains the discrepancies |
 
 ### Requirements
 
